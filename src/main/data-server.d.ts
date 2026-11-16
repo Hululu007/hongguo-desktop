@@ -161,6 +161,8 @@ declare module '@hongguo/server' {
       loginWithCode(mobile: string, code: string, mobileTicket?: string): Promise<{ token: string; savedAt: number; endpoint: string; steps?: unknown[] }>;
     };
     createStreamServer(options?: { streamService?: unknown; port?: number }): Promise<StreamServerHandle>;
+    /** 重置播放设备：注册全新匿名设备替换当前身份，并作废旧设备签名的缓存 */
+    resetDevice(): Promise<{ device_id: string; iid: string }>;
   }
 
   const hg: DataServer;

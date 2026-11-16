@@ -22,6 +22,10 @@ const LS_RATE = 'hg-player-rate';
 /** 付费集"免费通道配额耗尽"的友好提示 + 30s 冷却（避免连点打满接口） */
 const LOCKED_QUOTA_MSG = '该集为付费内容，当前免费通道暂时繁忙，请稍后再试';
 const LOCKED_QUOTA_COOLDOWN_SEC = 30;
+/** 连续失败达到该次数后，重试按钮升级为「重置设备」（重新注册匿名设备再播放） */
+const RESET_AFTER_FAILS = 3;
+/** 设备重置次数达到该值后不再显示重试/重置按钮（仅显示错误信息） */
+const MAX_DEVICE_RESETS = 2;
 /** 即将进入下一集的提前提示秒数（剩余播放时间 ≤ 该值时显示提示条） */
 const NEXT_TIP_SECONDS = 3;
 
@@ -156,6 +160,16 @@ function isLockedQuotaError(e: unknown): boolean {
   return m.code === 'LOCKED_QUOTA_EXHAUSTED' || String(m.message ?? '').includes('[HG:LOCKED_QUOTA]');
 }
 
+/**
+ * 错误信息中文化兜底：不含中文字符的错误消息（多为英文技术细节）替换为通用中文提示。
+ * @param {unknown} e - IPC/解析链路抛出的错误
+ * @returns {string} 可直接展示的中文错误文案
+ */
+function zhError(e: unknown): string {
+  const msg = String((e as Error)?.message ?? e);
+  return /[\u4e00-\u9fff]/.test(msg) ? msg : '视频加载失败，请稍后重试';
+}
+
 function fmt(sec: number): string {
   if (!Number.isFinite(sec)) return '00:00';
   const s = Math.floor(sec);
@@ -192,6 +206,11 @@ export function PlayerPage() {
   // 付费集配额耗尽冷却：剩余秒数（>0 时禁用"重试"，避免连点打满接口）
   const [cooldownLeft, setCooldownLeft] = useState(0);
   const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 连续失败计数（起播成功后清零）：达到 RESET_AFTER_FAILS 后重试按钮升级为「重置设备」
+  const [failCount, setFailCount] = useState(0);
+  // 本次会话已重置设备次数：达到 MAX_DEVICE_RESETS 后不再显示重试/重置按钮
+  const [resetCount, setResetCount] = useState(0);
+  const [resetting, setResetting] = useState(false);
 
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(true);
@@ -244,7 +263,7 @@ export function PlayerPage() {
     api
       .getDetail(seriesId)
       .then((d) => alive && setDetail(d))
-      .catch((e) => alive && setDetailErr(String(e?.message ?? e)));
+      .catch((e) => alive && setDetailErr(zhError(e)));
     return () => {
       alive = false;
     };
@@ -313,12 +332,14 @@ export function PlayerPage() {
           if (!info.videoUrl) throw new Error('未取到视频地址，请稍后重试');
           setVideoUrl(info.videoUrl);
           setVideoFormat(info.format);
-          // 起播成功：清除冷却
+          // 起播成功：清除冷却，重置失败/重置设备计数
           if (cooldownTimerRef.current) {
             clearInterval(cooldownTimerRef.current);
             cooldownTimerRef.current = null;
           }
           setCooldownLeft(0);
+          setFailCount(0);
+          setResetCount(0);
         })
         .catch((e) => {
           if (isLockedQuotaError(e)) {
@@ -326,8 +347,9 @@ export function PlayerPage() {
             setPlayErr(LOCKED_QUOTA_MSG);
             startCooldown();
           } else {
-            setPlayErr(String((e as Error)?.message ?? e));
+            setPlayErr(zhError(e));
           }
+          setFailCount((c) => c + 1);
         })
         .finally(() => setResolving(false));
     },
@@ -359,6 +381,7 @@ export function PlayerPage() {
       setTimeout(() => void resolveVideo(true), 400);
     } else {
       setPlayErr((prev) => prev || '视频加载失败，请点击重试');
+      setFailCount((c) => c + 1);
     }
   }, [resolveVideo]);
 
@@ -906,17 +929,39 @@ export function PlayerPage() {
         <div className="player-mask">
           <IconWarning size={28} />
           <p>{playErr}</p>
-          <button
-            className="btn ghost"
-            disabled={cooldownLeft > 0}
-            onClick={() => {
-              if (cooldownLeft > 0) return;
-              retryRef.current = 0;
-              void resolveVideo(true);
-            }}
-          >
-            {cooldownLeft > 0 ? `免费通道繁忙，${cooldownLeft}s 后可重试` : '重试'}
-          </button>
+          {resetCount < MAX_DEVICE_RESETS ? (
+            <button
+              className="btn ghost"
+              disabled={cooldownLeft > 0 || resetting}
+              onClick={() => {
+                if (cooldownLeft > 0 || resetting) return;
+                retryRef.current = 0;
+                if (failCount >= RESET_AFTER_FAILS) {
+                  // 重试 3 次仍失败：重置设备（重新注册匿名设备）后再取址播放；
+                  // 每次点击计入重置次数，达到上限后按钮消失，只保留错误信息
+                  setResetting(true);
+                  api
+                    .resetDevice()
+                    .catch(() => toast('设备重置失败，请稍后再试'))
+                    .finally(() => {
+                      setResetting(false);
+                      setResetCount((c) => c + 1);
+                      void resolveVideo(true);
+                    });
+                } else {
+                  void resolveVideo(true);
+                }
+              }}
+            >
+              {cooldownLeft > 0
+                ? `免费通道繁忙，${cooldownLeft}s 后可重试`
+                : resetting
+                  ? '正在重置设备…'
+                  : failCount >= RESET_AFTER_FAILS
+                    ? '重置设备'
+                    : '重试'}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {!playing && !resolving && !buffering && !playErr ? (

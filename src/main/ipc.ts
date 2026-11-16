@@ -518,6 +518,12 @@ export function registerIpc(): void {
     hg.streamService.prefetchNext(vid, 'auto');
     return true;
   }));
+  // 重置播放设备（播放页连续失败后的恢复手段）：重新注册全新匿名设备并作废旧设备缓存
+  ipcMain.handle('net:device-reset', userFacing(async () => {
+    const r = await hg.resetDevice();
+    hg.logger.info('Ipc', `播放设备已重置: device_id=${r.device_id}, iid=${r.iid}`);
+    return r;
+  }));
   // 弹幕（官方签名接口；fetchDanmaku 不抛错，异常统一转为 success:false + 中文说明）
   ipcMain.handle('net:danmaku', (_e, seriesId: string, itemId: string, fresh?: boolean) =>
     hg.danmaku.fetchDanmaku({

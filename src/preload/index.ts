@@ -26,6 +26,8 @@ const api = {
     ipcRenderer.invoke('net:play', seriesId, itemId, force, nextVid),
   /** 下一集整集预解密（无感切换）：后台全量拉取+解密入内存缓存，切集时命中缓存零等待 */
   streamPrefetch: (vid: string) => ipcRenderer.invoke('net:stream-prefetch', vid),
+  /** 重置播放设备：重新注册全新匿名设备并作废旧设备缓存（连续播放失败后的恢复手段） */
+  resetDevice: () => ipcRenderer.invoke('net:device-reset'),
   /** 登录态（x-tt-token）：读取当前状态 / 保存粘贴的 token / 清除恢复匿名 */
   getAuthState: () => ipcRenderer.invoke('net:auth-get'),
   setAuthToken: (raw: string) => ipcRenderer.invoke('net:auth-set', raw),

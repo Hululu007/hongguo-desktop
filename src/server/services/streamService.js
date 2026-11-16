@@ -294,6 +294,18 @@ class StreamService {
     return decrypted;
   }
 
+  /**
+   * 清空播放流相关缓存（换设备后调用）：旧设备身份签名的取址计划/已解密分片一律作废，
+   * 后续请求按新设备重新签名取流。不中断在途任务（与 shutdown 的全量中止语义不同）。
+   * @returns {void}
+   */
+  clearCache() {
+    this.cache.clear();
+    this.fragmentCache.clear();
+    this.plans.clear();
+    this.consumedRefreshes.clear();
+  }
+
   shutdown() {
     for (const waiter of [...this.waitingStreams]) waiter.finish(false);
     for (const timer of this.prefetchTimers.values()) clearTimeout(timer);

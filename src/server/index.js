@@ -20,5 +20,21 @@ const danmaku = require('./native/danmaku');
 const loginState = require('./native/login-state');
 const login = require('./native/login');
 const createStreamServer = require('./stream-server');
+const { getPlaybackDevice } = require('./native/playback-device');
+const appSource = require('./native/app-source');
 
-module.exports = { dramaService, streamService, storeService, logger, danmaku, loginState, login, createStreamServer };
+/**
+ * 重置播放设备：注册一个全新的匿名设备替换当前身份，并作废旧设备产生的所有缓存
+ * （取址 entryCache 与播放流缓存均按旧设备签名，换设备后一律不可复用）。
+ * 供播放页连续失败后的「重置设备」恢复手段调用。
+ * @returns {Promise<{device_id: string, iid: string}>} 新设备身份
+ * @throws {Error} 新设备注册失败时抛出（当前身份保持不变，可继续用旧设备重试）
+ */
+async function resetDevice() {
+  const device = await getPlaybackDevice.rotateDevice(appSource.requestJson);
+  try { appSource.clearEntryCache(); } catch { /* 缓存清理失败不影响换设备 */ }
+  try { streamService.clearCache(); } catch { /* 同上 */ }
+  return { device_id: device.device_id, iid: device.iid };
+}
+
+module.exports = { dramaService, streamService, storeService, logger, danmaku, loginState, login, createStreamServer, resetDevice };
