@@ -18,6 +18,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
+const { createJar, applyCookies, cookieInfo, cookieState, deviceKey, PLAYBACK_URL } = require('./device-session');
 
 const REGISTER_URL = 'https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1';
 const KDF_SALT = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
@@ -138,7 +139,8 @@ function identityFilePath() {
 
 /** 从本地文件加载持久化播放设备；无效/缺失返回 null。
  *  last_play_ok 在 24h 内 → provenGood=true（跨进程设备健康度护栏：重启后
- *  复用该设备时空响应不再换设备烧注册配额，见 app-source 取址阶梯）。 */
+ *  复用该设备时空响应不再换设备烧注册配额，见 app-source 取址阶梯）。
+ *  cookie_jar/session（设备会话，demo 重构新增）随身份一并恢复；旧格式文件自动兼容。 */
 function loadPersistedDevice() {
     try {
         const saved = JSON.parse(fs.readFileSync(identityFilePath(), 'utf8'));
@@ -151,6 +153,9 @@ function loadPersistedDevice() {
                 device_id, iid, cdid,
                 cookie: sanitizeCookie(saved.cookie, iid),
                 profile: normalizeProfile(saved.profile) || DEFAULT_PROFILE, provenGood,
+                created_at: Number(saved?.created_at) || Date.now(),
+                cookie_jar: saved?.cookie_jar,
+                session: saved?.session && typeof saved.session === 'object' ? saved.session : {},
             });
         }
     } catch {
@@ -159,8 +164,14 @@ function loadPersistedDevice() {
     return null;
 }
 
-/** 将注册成功的设备凭据写入本地文件（覆盖写；同一设备保留 last_play_ok 健康度；失败仅记录警告，不阻断播放） */
-function persistDevice(device) {
+/**
+ * 将注册成功的设备凭据写入本地文件（同一设备保留 last_play_ok 健康度；失败仅记录警告，不阻断播放）。
+ * demo 重构加固：临时文件 + rename 原子写，避免半写文件损坏身份；会话（cookie_jar/session）随身份落盘。
+ * @param {Object} device - 设备身份（device_id/iid/cdid/cookie/profile/cookie_jar/session/created_at）
+ * @param {boolean} [strict=false] - true 时写盘失败向外抛出（设备轮换场景要求落盘成功）
+ * @throws {Error} strict=true 且写盘失败时抛出原始错误
+ */
+function persistDevice(device, strict = false) {
     try {
         fs.mkdirSync(path.dirname(identityFilePath()), { recursive: true });
         // 同一设备重复落盘时保留既有健康度时间戳（换设备则不保留，健康度属于设备而非主机）
@@ -169,15 +180,22 @@ function persistDevice(device) {
             const saved = JSON.parse(fs.readFileSync(identityFilePath(), 'utf8'));
             if (saved?.device_id === device.device_id) lastPlayOk = saved.last_play_ok;
         } catch { /* 无旧文件 */ }
-        fs.writeFileSync(identityFilePath(), JSON.stringify({
+        const payload = JSON.stringify({
             device_id: device.device_id, install_id: device.iid, cdid: device.cdid,
             cookie: device.cookie || '',
             profile: device.profile || DEFAULT_PROFILE,
+            created_at: Number(device.created_at) || Date.now(),
+            ...(device.cookie_jar ? { cookie_jar: device.cookie_jar } : {}),
+            ...(device.session && typeof device.session === 'object' ? { session: device.session } : {}),
             ...(lastPlayOk ? { last_play_ok: lastPlayOk } : {}),
-        }, null, 2), 'utf8');
+        }, null, 2);
+        const tmpPath = `${identityFilePath()}.tmp.${Date.now()}`;
+        fs.writeFileSync(tmpPath, payload, 'utf8');
+        fs.renameSync(tmpPath, identityFilePath());
         logger.info('PlaybackDevice', `播放设备凭据已持久化: ${identityFilePath()}`);
     } catch (error) {
         logger.warn('PlaybackDevice', `播放设备凭据持久化失败: ${error.message}`);
+        if (strict) throw error;
     }
 }
 
@@ -269,17 +287,40 @@ function createPlaybackDeviceRegistrar(options = {}) {
     let registration;
     let request;
     let currentDevice;
+    /** 会话 CookieJar（demo 重构新增）：懒创建，随身份/响应持续维护 */
+    let jar;
+    /** 设备轮换 promise（rotateDevice 进行中标记，并发轮换共享） */
+    let rotation;
+    /** 会话落盘节流时间戳 */
+    let lastSavedAt = 0;
     /** 上次注册失败时间（快速失败冷却） */
     let lastRegFailAt = 0;
     /** 上次设备重置时间（重置冷却） */
     let lastResetAt = 0;
+    /** 待保存设备是否与当前设备一致（旧响应不得覆盖新设备会话） */
+    const sameDevice = device => Boolean(device && currentDevice
+        && device.device_id === currentDevice.device_id && device.iid === currentDevice.iid && device.cdid === currentDevice.cdid);
+    const sessionJar = () => jar ||= createJar(currentDevice);
+    /**
+     * 会话变更落盘（30s 节流；cookie 修剪/更新/失败响应时立即强制写入）。
+     * @param {boolean} [force=false] - 跳过节流立即写盘
+     * @returns {void}
+     */
+    const saveSession = (force = false) => {
+        if (persist && currentDevice && (force || Date.now() - lastSavedAt >= 30000)) {
+            persistDevice(currentDevice);
+            lastSavedAt = Date.now();
+        }
+    };
     const registrar = function getPlaybackDevice(requestJson, signal) {
         if (signal?.aborted) return Promise.reject(signal.reason);
         // Concurrent playback/search requests share registration. Retries reuse the
         // same encrypted payload and identity, including after an exhausted attempt.
         registration ||= Promise.resolve().then(async () => {
             // 1) 优先复用内存/持久化身份：一次注册跨重启共享，避免频繁新设备触发风控
-            const reused = currentDevice || loadPersistedDevice();
+            //    （persist=false 的临时注册器——如 rotateDevice 候选——不读持久化文件，
+            //    否则候选会复用主设备而无法注册全新设备）
+            const reused = currentDevice || (persist ? loadPersistedDevice() : null);
             if (reused) {
                 currentDevice = reused;
                 logger.info('PlaybackDevice', `复用播放设备: device_id=${reused.device_id}, iid=${reused.iid}`);
@@ -326,13 +367,21 @@ function createPlaybackDeviceRegistrar(options = {}) {
                         cookie = `store-region=cn-bj; store-region-src=did; install_id=${iid}`;
                     }
                     logger.info('PlaybackDevice', `匿名设备注册成功: device_id=${device_id}, iid=${iid}, model=${profile.model}`);
-                    const device = Object.freeze({ device_id, iid, cdid: request.cdid, cookie, profile, provenGood: false });
-                    persistDevice(device);
+                    const device = Object.freeze({ device_id, iid, cdid: request.cdid, cookie, profile, provenGood: false, created_at: Date.now() });
+                    // 注册响应 set-cookie 灌入会话 Jar（demo 重构）：store-region 等身份会话
+                    // 由 Jar 按 domain/path/expiry 权威管理，随身份持久化并在后续请求回带
+                    const initialJar = createJar(device);
+                    applyCookies(initialJar, REGISTER_URL, respHeaders);
+                    jar = initialJar;
+                    currentDevice = Object.freeze({ ...device, cookie_jar: jar.serializeSync(), session: { cookie_updated_at: Date.now() } });
+                    if (persist) {
+                        persistDevice(currentDevice);
+                    }
                     // 触发注册成功钩子（行为预热）：尽力而为，不阻塞、不抛错
                     if (typeof registrationHook === 'function') {
-                        try { Promise.resolve(registrationHook(device)).catch(() => { }); } catch { /* 钩子异常不影响播放 */ }
+                        try { Promise.resolve(registrationHook(currentDevice)).catch(() => { }); } catch { /* 钩子异常不影响播放 */ }
                     }
-                    return currentDevice = device;
+                    return currentDevice;
                 } catch (error) {
                     if (attempt === 2 || !retryable(error) || Date.now() >= deadline) throw error;
                     await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
@@ -349,10 +398,124 @@ function createPlaybackDeviceRegistrar(options = {}) {
         });
         return waitForRegistration(registration, signal);
     };
+    /** 同步读取当前活跃设备（内存优先，持久化兜底；不触发注册、不含基准设备——
+     *  demo 重构语义：元数据等旁路请求仅在存在独立注册设备时与播放同源） */
+    registrar.getCurrentDevice = function getCurrentDevice() {
+        if (currentDevice && currentDevice.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) return currentDevice;
+        if (persist) {
+            const loaded = loadPersistedDevice();
+            if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) return loaded;
+        }
+        return null;
+    };
+    /**
+     * 按 URL 上的 device_id/iid/cdid query 匹配当前设备（demo 重构）。
+     * 请求开始时捕获代次：旧设备的迟到响应绝不允许覆盖替换后设备的身份或 Cookie。
+     * @param {string} url - 含签名 query 的完整请求 URL
+     * @returns {Object|null} 匹配的设备身份；不匹配返回 null
+     */
+    registrar.matchRequest = function matchRequest(url) {
+        const query = new URL(url).searchParams;
+        const device = registrar.getCurrentDevice();
+        return device && query.get('device_id') === device.device_id && query.get('iid') === device.iid
+            && (!query.has('cdid') || query.get('cdid') === device.cdid) ? device : null;
+    };
+    /**
+     * 请求开始：记录会话使用统计并返回作用域 Cookie（demo 重构）。
+     * 读取会顺带修剪过期 cookie；修剪发生时立即落盘。
+     * @param {Object} device - matchRequest 返回的设备身份
+     * @param {string} url - 本次请求 URL（cookie 作用域）
+     * @returns {{cookie: string, idle_before_request_ms: number|null, device_key: string, cookie_names: string[], cookie_count: number}|null} 会话快照；设备不匹配返回 null
+     */
+    registrar.beginRequest = function beginRequest(device, url) {
+        if (!sameDevice(device)) return null;
+        const now = Date.now();
+        const idle = currentDevice.session?.last_used_at ? Math.max(0, now - currentDevice.session.last_used_at) : null;
+        const before = cookieState(sessionJar());
+        const cookie = sessionJar().getCookieStringSync(url);
+        const pruned = before !== cookieState(sessionJar());
+        currentDevice = Object.freeze({ ...currentDevice, cookie_jar: sessionJar().serializeSync(),
+            session: { ...currentDevice.session, ...(pruned ? { cookie_pruned_at: now } : {}),
+                last_used_at: now, request_count: (Number(currentDevice.session?.request_count) || 0) + 1 } });
+        saveSession(pruned);
+        return { cookie, idle_before_request_ms: idle, ...registrar.diagnostics(device, url) };
+    };
+    /**
+     * 当前设备会话诊断信息（demo 重构）：设备代次/年龄/会话统计/cookie 状态。
+     * @param {Object} device - 设备身份
+     * @param {string} url - 目标 URL
+     * @returns {Object} 诊断字段（设备不匹配时仅含 stale_device: true）
+     */
+    registrar.diagnostics = function diagnostics(device, url) {
+        if (!sameDevice(device)) return { stale_device: true };
+        return { device_key: deviceKey(currentDevice), device_age_ms: Math.max(0, Date.now() - (Number(currentDevice.created_at) || Date.now())),
+            ...currentDevice.session, ...cookieInfo(sessionJar(), url) };
+    };
+    /**
+     * 响应结束：回写 set-cookie 到会话 Jar 并更新成败统计（demo 重构）。
+     * cancelled（客户端主动取消）不计入失败；cookie 变更或失败响应触发落盘。
+     * @param {Object} device - matchRequest 返回的设备身份
+     * @param {string} url - 响应对应 URL
+     * @param {Object} headers - 响应头（取 set-cookie；网络异常时传空对象）
+     * @param {string} outcome - 结果码（'ok' / HTTP_x / EMPTY_RESPONSE / ERR_CANCELED 等）
+     * @returns {Object} 会话诊断 + set_cookie 处理统计
+     */
+    registrar.recordResponse = function recordResponse(device, url, headers, outcome) {
+        if (!sameDevice(device)) return { stale_device: true };
+        const now = Date.now();
+        const before = cookieState(sessionJar());
+        const update = applyCookies(sessionJar(), url, headers);
+        // Reading also prunes expired cookies before persistence.
+        sessionJar().getCookieStringSync(url);
+        const serialized = sessionJar().serializeSync();
+        const changed = before !== cookieState(sessionJar());
+        const ok = outcome === 'ok';
+        const cancelled = outcome === 'ERR_CANCELED';
+        const session = { ...currentDevice.session, last_response_at: now,
+            ...(ok ? { last_success_at: now, consecutive_failures: 0, last_error: null }
+                : cancelled ? {} : { last_failure_at: now, last_error: outcome,
+                    consecutive_failures: (Number(currentDevice.session?.consecutive_failures) || 0) + 1 }),
+            ...(changed ? { cookie_updated_at: now } : {}) };
+        currentDevice = Object.freeze({ ...currentDevice, session, cookie_jar: serialized,
+            cookie: sessionJar().getCookieStringSync(PLAYBACK_URL) });
+        saveSession(changed || !ok);
+        return { ...registrar.diagnostics(device, url), set_cookie: update, cookie_changed: changed };
+    };
+    /**
+     * 用户主动更换设备（demo 重构新增）：注册全新独立设备并替换当前身份。
+     * 先等在途注册完成再替换；候选注册器不落盘（strict 落盘交给主注册器）。
+     * @param {Function} requestJson - 请求通道函数
+     * @param {AbortSignal} [signal] - 取消信号
+     * @returns {Promise<Object>} 新设备身份
+     * @throws {Error} 注册失败或落盘失败时抛出
+     */
+    registrar.rotateDevice = async function rotateDevice(requestJson, signal) {
+        if (signal?.aborted) return Promise.reject(signal.reason);
+        if (!rotation) {
+            rotation = (async () => {
+                // Let an earlier registration finish before replacing its result.
+                if (registration) await registration.catch(() => {});
+                logger.info('PlaybackDevice', '收到用户主动更换设备指令，开始注册全新的独立匿名设备...');
+                const candidate = createPlaybackDeviceRegistrar({ persist: false });
+                const newDevice = await candidate(requestJson);
+                currentDevice = newDevice;
+                jar = undefined;
+                registration = undefined;
+                request = undefined;
+                if (persist) {
+                    persistDevice(newDevice, true);
+                }
+                return newDevice;
+            })().finally(() => { rotation = undefined; });
+        }
+        return waitForRegistration(rotation, signal);
+    };
     /** 主备通道均空响应时的兜底（PR#92）：回退到内置基准设备并持久化；
-     *  基准设备为实测可用身份，切换不消耗注册配额、不触发风控 */
+     *  基准设备为实测可用身份，切换不消耗注册配额、不触发风控。
+     *  同时作废会话 Jar（demo 重构）：下次请求按基准设备 cookie 重建。 */
     registrar.fallbackToDefault = function fallbackToDefault() {
         currentDevice = DEFAULT_VERIFIED_DEVICE;
+        jar = undefined;
         registration = undefined;
         request = undefined;
         if (persist) {
@@ -375,6 +538,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
         registration = undefined;
         request = undefined;
         currentDevice = undefined;
+        jar = undefined;
         clearPersistedDevice();
         return true;
     };

@@ -363,7 +363,7 @@ class StreamService {
   async getStreamingPlan(vid, quality, signal, minValidityMs = 0, nextVids = [], progressive = false) {
     const key = `${vid}:${quality}`;
     const cached = this.plans.get(key);
-    if (cached?.expires > Date.now() + minValidityMs) { this.plans.delete(key); this.plans.set(key, cached); return cached.plan; }
+    if (cached && (cached.active || cached.expires > Date.now() + minValidityMs)) { this.plans.delete(key); this.plans.set(key, cached); return cached.plan; }
     const t0 = Date.now();
     logger.info('StreamService', `开始构建流式分片播放计划: vid=${vid}, quality=${quality}`);
     const info = await appSource.fetchAppPlayUrl(vid, { quality, allowLowerQuality: true, allowBytevc2: true, signal, nextVids });
@@ -377,6 +377,9 @@ class StreamService {
       signal.throwIfAborted();
       try {
         const plan = await rangeMedia.prepareRangeMedia({ ...variant, contentKey: variant.contentKey || info.contentKey }, this.requestOptions, signal);
+        // 另一个请求可能在本计划准备期间已开始提供计划（demo 重构）：让位给活跃计划，避免重复构建与缓存覆盖
+        const active = this.plans.get(key);
+        if (active?.active) return active.plan;
         logger.info('StreamService', `流式分片计划构建完成: vid=${vid}, 大小=${plan.size} 字节, 耗时=${Date.now() - t0}ms`);
         this.plans.set(key, { plan, expires: Date.now() + 90000 });
         while (this.plans.size > 8 || [...this.plans.values()].reduce((sum, item) => sum + item.plan.bytes, 0) > this.maxPlanBytes) {
@@ -501,6 +504,9 @@ class StreamService {
       const progressive = req.query?.mse === '1' || req.query?.mse === 'stream';
       const plan = await this.getStreamingPlan(vid, quality, controller.signal, 0, nextVids, progressive);
       if (!plan) return await this.handleBufferedStream(req, res, vid);
+      // 标记本请求正在服务的计划为活跃（demo 重构）：并发构建与快速断连清理以该标记为准
+      const planEntry = this.plans.get(planKey);
+      if (planEntry?.plan === plan) planEntry.active = true;
       if (plan.bytevc2) {
         if (req.query?.mse !== 'stream') {
           res.writeHead(409, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Stream-Mode': 'bytevc2-progressive' });

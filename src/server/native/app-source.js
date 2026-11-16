@@ -10,6 +10,7 @@ const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
 const { getPlaybackDevice, DEFAULT_PROFILE, DEFAULT_VERIFIED_DEVICE } = require('./playback-device');
 const loginState = require('./login-state');
+const { deviceKey } = require('./device-session');
 
 // 端点 origin 集中参数化（对照风控分析文档 §六.7）：TTNet 会整体迁域，迁域时
 // 表现为「全量 200+0」，届时只需改这里并重新抓包对齐，不必散改各处常量。
@@ -302,16 +303,40 @@ function signedSearchRequest({ keyword, page = 1, cursor = null, identity } = {}
 // Catalogue cursors belong to one anonymous identity; keep it in memory for this process only.
 const metadataDevice = { ...DEVICE, version_code: '73532', version_name: '7.3.5.32', manifest_version_code: '73532',
     update_version_code: '73532', pv_player: '73532', iid: localId(), device_id: localId() };
+/**
+ * 元数据请求的活跃设备身份（demo 新增）：存在独立注册设备时与其同源
+ * （iid/device_id/cdid 取注册设备），避免元数据身份与播放身份割裂被风控关联；
+ * 无注册设备时沿用进程内随机身份。
+ * @returns {Object} 元数据设备参数集（73532 档）
+ */
+function getActiveMetadataDevice() {
+    const current = typeof getPlaybackDevice.getCurrentDevice === 'function' ? getPlaybackDevice.getCurrentDevice() : null;
+    if (current?.device_id && current?.iid) {
+        return {
+            ...DEVICE,
+            version_code: '73532',
+            version_name: '7.3.5.32',
+            manifest_version_code: '73532',
+            update_version_code: '73532',
+            pv_player: '73532',
+            iid: current.iid,
+            device_id: current.device_id,
+            cdid: current.cdid || metadataDevice.cdid,
+        };
+    }
+    return metadataDevice;
+}
 function signedMetadataRequest(apiPath, values = {}, payload = null) {
     if (!['/reading/distribution/category/landpage/v/', '/reading/bookapi/bookmall/cell/change/v', '/reading/user/celebrity/homepage/v1/', '/reading/user/celebrity/works/v1/'].includes(apiPath)) {
         throw new Error('不支持的 App 目录接口');
     }
+    const targetDevice = getActiveMetadataDevice();
     const body = payload === null ? null : Buffer.from(JSON.stringify(payload));
     const khronos = Math.floor(Date.now() / 1000), ticketBase = Date.now();
     let query, url, requestTicket;
     for (let n = 0; n < 128; n += 1) {
         requestTicket = ticketBase + n;
-        query = pythonUrlEncode({ ...values, ...metadataDevice, ts: String(khronos), _rticket: String(requestTicket) });
+        query = pythonUrlEncode({ ...values, ...targetDevice, ts: String(khronos), _rticket: String(requestTicket) });
         url = `https://api5-normal-sinfonlineb.fqnovel.com${apiPath}?${query}`;
         if (branchOf(url, body, khronos) === 0) break;
         if (n === 127) throw new Error('无法生成 App 目录请求签名');
@@ -322,7 +347,7 @@ function signedMetadataRequest(apiPath, values = {}, payload = null) {
         'x-ss-req-ticket': String(requestTicket), 'x-khronos': String(khronos),
         'x-gorgon': xGorgon(query, body, khronos, Math.floor(Math.random() * 65536)),
         'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
-        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, metadataDevice), 'x-tt-dt': '',
+        'x-helios': helios(khronos), 'x-medusa': buildMedusa(url, body, khronos, targetDevice), 'x-tt-dt': '',
     };
     if (body) { headers['Content-Type'] = 'application/json; charset=utf-8'; headers['x-ss-stub'] = md5(body); }
     return { url, headers, body };
@@ -435,25 +460,71 @@ function checkedUrl(value, domains) {
 
 async function requestJson(url, options, deadline, signal) {
     const axios = require('axios');
+    const requestId = crypto.randomUUID();
+    const { diagnostics, ...transportOptions } = options;
+    // 请求代次捕获（demo 重构）：按 URL 上的设备三要素匹配当前设备，旧设备的
+    // 迟到响应绝不覆盖替换后设备的会话
+    const identity = getPlaybackDevice.matchRequest?.(url) || null;
     for (let redirects = 0; redirects < 4; redirects++) {
         url = checkedUrl(url, ['fqnovel.com', 'snssdk.com']);
         const timeout = deadline - Date.now();
         if (timeout <= 0) throw Object.assign(new Error('App 片源请求超时'), { code: 'ETIMEDOUT' });
+        const target = new URL(url);
+        const started = Date.now();
+        const session = identity && getPlaybackDevice.beginRequest?.(identity, url);
+        const headers = { ...options.headers };
+        if (session) {
+            // 会话 Cookie 注入（demo 重构）：Jar 为设备身份 cookie 的权威来源；
+            // 现有 Cookie 头中与 Jar 重叠的键被替换，登录态等其余键保留在后
+            if (session.cookie) {
+                const jarKeys = new Set(String(session.cookie).split(';')
+                    .map(part => part.split('=')[0].trim().toLowerCase()).filter(Boolean));
+                const rest = String(headers.Cookie || '').split(';').map(part => part.trim()).filter(Boolean)
+                    .filter(part => !jarKeys.has(part.split('=')[0].trim().toLowerCase()));
+                headers.Cookie = [session.cookie, ...rest].filter(Boolean).join('; ');
+            }
+        }
+        const context = { request_id: requestId, host: target.hostname, path: target.pathname,
+            method: options.method || 'GET',
+            ...(session ? { idle_before_request_ms: session.idle_before_request_ms,
+                sent_cookie_names: session.cookie_names, sent_cookie_count: session.cookie_count } : {}),
+            ...(diagnostics ? { playback_id: diagnostics.playback_id, vid: diagnostics.vid } : {}),
+            ...(identity ? { device_key: deviceKey(identity) } : {}) };
         let response;
         try {
             response = await axios({
-                ...options, url, timeout, signal, maxRedirects: 0,
+                ...transportOptions, headers, url, timeout, signal, maxRedirects: 0,
                 responseType: 'text', transformResponse: [(data) => data],
                 maxContentLength: 2 * 1024 * 1024, maxBodyLength: 1024 * 1024,
                 validateStatus: () => true,
             });
         } catch (error) {
             const isAborted = Boolean(signal?.aborted);
-            const code = isAborted ? 'ETIMEDOUT' : ['ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+            const code = isAborted ? (signal.reason?.name === 'TimeoutError' ? 'ETIMEDOUT' : 'ERR_CANCELED') : ['ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
                 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_CANCELED'].includes(error.code) ? error.code : 'ERR_NETWORK';
+            const state = identity && getPlaybackDevice.recordResponse?.(identity, url, {}, code);
+            logger.warn('AppRequest', '接口网络异常', { ...context, elapsed_ms: Date.now() - started, outcome: code, ...state });
             throw Object.assign(new Error(['ECONNABORTED', 'ETIMEDOUT'].includes(code)
-                ? 'App 片源请求超时' : 'App 片源网络请求失败，请稍后重试'), { code });
+                ? 'App 片源请求超时' : 'App 片源网络请求失败，请稍后重试'), { code, requestId });
         }
+        // 响应结果分类（demo 重构）：供会话统计与诊断日志（记录回写发生在抛错前，
+        // 保证空响应/业务拒绝同样计入设备失败统计）
+        const raw = typeof response.data === 'string' ? response.data : '';
+        const parsedEarly = typeof response.data === 'string' ? jsonBody(raw) : response.data;
+        const businessCode = Number(parsedEarly?.Code ?? parsedEarly?.code ?? parsedEarly?.status_code ?? 0);
+        const outcome = response.status !== 200 ? `HTTP_${response.status}` : !raw.trim() && typeof response.data === 'string'
+            ? 'EMPTY_RESPONSE' : !parsedEarly || typeof parsedEarly !== 'object' ? 'INVALID_RESPONSE'
+                : businessCode !== 0 ? 'BUSINESS_REJECTED' : 'ok';
+        const state = identity && getPlaybackDevice.recordResponse?.(identity, url, response.headers, outcome);
+        const logid = String(response.headers?.['x-tt-logid'] || '').slice(0, 128);
+        logger[outcome === 'ok' ? 'info' : 'warn']('AppRequest', '接口响应诊断', {
+            ...context, status: response.status, elapsed_ms: Date.now() - started,
+            response_bytes: Buffer.byteLength(raw), outcome, business_code: Number.isFinite(businessCode) ? businessCode : null,
+            logid, retry_after: String(response.headers?.['retry-after'] || '').slice(0, 64),
+            content_type: String(response.headers?.['content-type'] || '').slice(0, 128),
+            ...(diagnostics && target.pathname.includes('/player/')
+                ? { has_requested_video: Boolean(parsedEarly?.data?.[diagnostics.vid] || parsedEarly?.data?.video_model) } : {}), ...state,
+        });
         if ([301, 302, 303, 307, 308].includes(response.status)) {
             // Do not resend a signed body to a redirect destination.
             if (options.method === 'POST' || !response.headers.location) throw Object.assign(new Error('App 接口发生不支持的跳转'), { code: 'SECURITY_BLOCKED' });
@@ -461,17 +532,17 @@ async function requestJson(url, options, deadline, signal) {
             continue;
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
-        const raw = typeof response.data === 'string' ? response.data : '';
         if (!raw.trim()) {
             // L0 静默拒绝：附带回包字节数与 logid，便于区分签名（L1）/设备（L2）/配额（L3）层
             throw Object.assign(new Error('App 接口返回空响应，可能是签名或设备鉴权问题'), {
                 code: 'EMPTY_RESPONSE',
                 status: response.status,
                 bytes: Buffer.byteLength(raw),
-                logid: response.headers?.['x-tt-logid'] || '',
+                logid,
+                requestId,
             });
         }
-        const parsed = typeof response.data === 'string' ? jsonBody(raw) : response.data;
+        const parsed = parsedEarly;
         if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
         // 附加响应头（不可枚举）：设备注册需读取 set-cookie 捕获 store-region 会话
         if (response.headers) {
@@ -524,7 +595,7 @@ async function parseEntryPlayInfo(vid, entry, requestedQuality, allowLowerQualit
     const hasCompatibleCodec = candidates.some(row => row.codecRank < 2);
     const rows = candidates.filter(row => row.codecRank < (hasCompatibleCodec ? 2 : 3)
         && (allowLowerQuality || meetsDownloadQuality(row, requestedQuality))).sort((a, b) => {
-        if (requestedQuality === 'auto') return a.codecRank - b.codecRank || b.pixels - a.pixels;
+        if (requestedQuality === 'auto') return b.pixels - a.pixels || a.codecRank - b.codecRank;
         const aMeets = meetsDownloadQuality(a, requestedQuality), bMeets = meetsDownloadQuality(b, requestedQuality);
         if (aMeets !== bMeets) return Number(bMeets) - Number(aMeets);
         const aPixels = Math.min(a.width, a.height), bPixels = Math.min(b.width, b.height);
@@ -681,7 +752,10 @@ async function fetchAppPlayUrlInner(vid, options = {}) {
         biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
         mixed_video_id_map: { '1004': batch },
     });
-    const execRequestJson = (...args) => (module.exports.requestJson || requestJson)(...args);
+    // 本次取址的追踪 id（demo 重构）：透传给 requestJson，将同一取址的多条请求日志串起来
+    const playbackId = crypto.randomUUID();
+    const execRequestJson = (url, requestOptions, ...args) => (module.exports.requestJson || requestJson)(url,
+        { ...requestOptions, diagnostics: { playback_id: playbackId, vid } }, ...args);
     const device = await getPlaybackDevice(execRequestJson, signal);
     // 新注册的匿名设备异步预热（不阻塞本次取址；登录态/基准设备/已验证设备无需预热）
     if (!loginState.hasToken() && !deviceProvenGood && !getPlaybackDevice.currentProvenGood?.()
