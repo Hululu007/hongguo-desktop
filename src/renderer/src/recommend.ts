@@ -23,6 +23,10 @@ const IMPRESSIONS_KEY = 'recommend.impressions.v1';
 const IMPRESSIONS_MAX = 500;
 const IMPRESSION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+/** 推荐列表 24h 磁盘缓存 key / TTL：避免每次回首页都重新搜索与计算 */
+const REC_LIST_KEY = 'recommend.list.v1';
+const REC_LIST_TTL_MS = 24 * 60 * 60 * 1000;
+
 /** 画像信号补全：最多补全的近期历史条数（详情接口较重，宁少勿多） */
 const SIGNAL_ENRICH_LIMIT = 5;
 /** 详情补全单次并发上限 */
@@ -224,20 +228,26 @@ let feed: RecommendationFeed | null = null;
 
 /**
  * 确保推荐 feed 就绪：重建画像（信号补全有缓存，开销小）并加载冷却记录。
+ * @param {ReadonlySet<string>} extraExcluded - 额外排除集（如首页分区已展示条目，
+ *        避免选出即被首页去重过滤，白白浪费推荐名额）
  * @returns {Promise<RecommendationFeed>} 就绪的推荐 feed
  */
-async function ensureFeed(): Promise<RecommendationFeed> {
+async function ensureFeed(extraExcluded: ReadonlySet<string> = new Set()): Promise<RecommendationFeed> {
   const signals = await buildSignals();
   const profile: UserProfile = buildProfile(signals, { preferredCategories: [] });
   if (!feed) {
     feed = new RecommendationFeed(
       new IpcFeedSource(),
       profile,
-      { batchSize: 3, impressionCooldownMs: IMPRESSION_COOLDOWN_MS },
+      { batchSize: 4, impressionCooldownMs: IMPRESSION_COOLDOWN_MS },
       {
         enrich: enrichItems,
-        // 惰性取值：历史条目变化即时生效（看过的剧不再推荐）
-        excluded: () => new Set(historyStore.getState().entries.map((e) => e.dramaId)),
+        // 惰性取值：历史条目变化即时生效（看过的剧不再推荐）+ 首页已展示条目
+        excluded: () => {
+          const ids = new Set(historyStore.getState().entries.map((e) => e.dramaId));
+          for (const id of extraExcluded) ids.add(id);
+          return ids;
+        },
       },
     );
   } else {
@@ -247,20 +257,66 @@ async function ensureFeed(): Promise<RecommendationFeed> {
   return feed;
 }
 
+/** 推荐列表缓存（内存 + 磁盘双层）：磁盘首次调用时读入内存，命中路径零 IPC */
+let recListCache: { savedAt: number; items: ScoredCandidate[] } | null = null;
+let recListLoaded = false;
+
+/**
+ * 从磁盘加载推荐列表缓存（仅首次）。
+ */
+async function loadRecListCache(): Promise<void> {
+  if (recListLoaded) return;
+  recListLoaded = true;
+  try {
+    const saved = await api.storage.get<{ savedAt: number; items: ScoredCandidate[] }>(REC_LIST_KEY);
+    if (saved && Array.isArray(saved.items) && Number.isFinite(saved.savedAt)) recListCache = saved;
+  } catch {
+    /* 缓存读取失败按无缓存处理 */
+  }
+}
+
+/**
+ * 按排除集过滤缓存列表：首页分区已展示 + 观看历史（缓存期间看完的剧不再出现）。
+ * @param {ReadonlySet<string>} excludeIds - 首页分区已展示条目 id
+ * @param {number} count - 期望部数
+ * @returns {ScoredCandidate[]} 过滤后的推荐列表
+ */
+function pickFromCache(excludeIds: ReadonlySet<string>, count: number): ScoredCandidate[] {
+  const watched = new Set(historyStore.getState().entries.map((e) => e.dramaId));
+  const out: ScoredCandidate[] = [];
+  const seen = new Set<string>();
+  for (const it of recListCache?.items ?? []) {
+    if (seen.has(it.id) || watched.has(it.id) || excludeIds.has(it.id)) continue;
+    seen.add(it.id);
+    out.push(it);
+    if (out.length >= count) break;
+  }
+  return out;
+}
+
 /**
  * 取下一批推荐（首页 banner 与「猜你喜欢」共用同一 feed，会话内天然互不重复）。
- * 探索槽模式下 feed 缓冲区可能堆叠同一候选的重复拷贝（core 只对已发出项去重，
- * 不对已缓冲项去重），故这里按 id 跨轮去重并多轮补齐到目标数量。
+ * 24h 缓存策略（用户指定）：命中未过期缓存直接返回（回首页即时稳定显示、零搜索）；
+ * 过期/缺失才走 feed 计算，成功后写缓存；计算失败时若有过期旧缓存则沿用，避免模块消失。
  * @param {number} count - 期望部数
- * @returns {Promise<ScoredCandidate[]>} 推荐候选（失败返回空数组，首页降级为原分区头部）
+ * @param {ReadonlySet<string>} excludeIds - 首页分区已展示条目 id（参与计算排除与缓存展示过滤）
+ * @returns {Promise<ScoredCandidate[]>} 推荐候选（无可用数据返回空数组，首页降级为原分区头部）
  */
-export async function fetchRecommendations(count: number): Promise<ScoredCandidate[]> {
+export async function fetchRecommendations(
+  count: number,
+  excludeIds: ReadonlySet<string> = new Set(),
+): Promise<ScoredCandidate[]> {
   try {
-    const f = await ensureFeed();
+    await loadRecListCache();
+    if (recListCache && Date.now() - recListCache.savedAt < REC_LIST_TTL_MS) {
+      return pickFromCache(excludeIds, count);
+    }
+
+    const f = await ensureFeed(excludeIds);
     const out: ScoredCandidate[] = [];
     const seen = new Set<string>();
-    // 最多 3 轮：每轮发出项会进 feed 的 sessionSeen，重复候选被滤掉后 feed 会拉新批次
-    for (let round = 0; round < 3 && out.length < count; round++) {
+    // 最多 4 轮：每轮发出项会进 feed 的 sessionSeen，重复候选被滤掉后 feed 会拉新批次
+    for (let round = 0; round < 4 && out.length < count; round++) {
       const items = await f.next(count - out.length + 4);
       if (items.length === 0) break;
       for (const it of items) {
@@ -271,8 +327,16 @@ export async function fetchRecommendations(count: number): Promise<ScoredCandida
       }
     }
     saveImpressions(f.getImpressions());
+
+    // 有结果才写缓存；计算失败/为空时沿用过期旧缓存（stale 兜底，保证模块不消失）
+    if (out.length > 0) {
+      recListCache = { savedAt: Date.now(), items: out.slice(0, count) };
+      void api.storage.set(REC_LIST_KEY, recListCache).catch(() => { });
+    }
+    if (out.length === 0 && recListCache) return pickFromCache(excludeIds, count);
     return out.slice(0, count);
   } catch {
+    if (recListCache) return pickFromCache(excludeIds, count);
     return [];
   }
 }

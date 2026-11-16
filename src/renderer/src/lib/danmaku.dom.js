@@ -202,9 +202,14 @@ const Danmaku = (function () { 'use strict';
           if (previous.mode !== 'rtl' || y >= previous.y + previous.height || y + cmt.height <= previous.y) continue;
           var previousStart = this.media ? previous.time : previous._utc;
           var end = Math.min(start + duration, previousStart + duration);
-          var gapNow = xAt(cmt, ct) - xAt(previous, ct) - previous.width;
-          var gapEnd = xAt(cmt, end) - xAt(previous, end) - previous.width;
-          if (Math.min(gapNow, gapEnd) < 8) { available = false; break; }
+          // 双向轨道分配（同步参考项目更新）：新弹幕排在已有弹幕前方或后方均安全入轨
+          // （RTL 同速滚动下相对距离恒定，两种朝向都不会碰撞），轨道利用率与同屏密度显著提升；
+          // 旧逻辑仅允许"新弹幕在旧弹幕前方"，繁忙时段大量弹幕被误拒。
+          var cmtAhead = (xAt(cmt, ct) - xAt(previous, ct) - previous.width >= 8) &&
+                         (xAt(cmt, end) - xAt(previous, end) - previous.width >= 8);
+          var prevAhead = (xAt(previous, ct) - xAt(cmt, ct) - cmt.width >= 8) &&
+                          (xAt(previous, end) - xAt(cmt, end) - cmt.width >= 8);
+          if (!cmtAhead && !prevAhead) { available = false; break; }
         }
         if (available) return y;
       }

@@ -785,6 +785,12 @@ export function PlayerPage() {
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
 
+  // ===== 下一集预加载（无感切换）："即将播放"提示出现（剩余 ≤3s）时后台整集预解密下一集，
+  // 切集时主进程命中完整内存缓存直接进入缓冲播放，消除切集卡顿缓冲。幂等，重复触发自动跳过
+  useEffect(() => {
+    if (nextTip && nextEp?.id) void api.streamPrefetch(nextEp.id).catch(() => { });
+  }, [nextTip, nextEp]);
+
   // ===== video 事件（JSX 里绑定的小工具） =====
   const onTime = () => {
     const v = videoRef.current;

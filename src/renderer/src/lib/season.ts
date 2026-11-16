@@ -100,6 +100,10 @@ export function normalizeBaseTitle(title: string | undefined | null): string {
  */
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const seasonsCache = new Map<string, { list: DramaCard[]; at: number }>();
+/** 成员索引：剧 id → 所属系列缓存键。同系列靠标题搜索聚合，副标题差异会让
+ * "被包含匹配进来的剧"自身 baseTitle 与系列键不同（缓存未命中 → 重新搜索 → 波动时
+ * 只搜到自己 → 分季模块消失）；经分季卡片跳转的剧直接按 id 反查所属系列缓存。 */
+const memberIndex = new Map<string, string>();
 
 /**
  * 拉取同系列各季卡片（含当前季，按季数升序；探索来源 = 基础剧名搜索前两页）。
@@ -111,6 +115,15 @@ const seasonsCache = new Map<string, { list: DramaCard[]; at: number }>();
 export async function fetchRelatedSeasons(current: DramaCard): Promise<DramaCard[]> {
   const { baseTitle } = parseSeasonInfo(current.title);
   if (!baseTitle) return [current];
+
+  // 成员索引优先：从分季卡片跳转过来的剧按 id 反查所属系列缓存，直接复用列表
+  const memberKey = memberIndex.get(current.id);
+  if (memberKey) {
+    const indexed = seasonsCache.get(memberKey);
+    if (indexed && Date.now() - indexed.at < CACHE_TTL_MS && indexed.list.some((c) => c.id === current.id)) {
+      return indexed.list;
+    }
+  }
 
   const normBase = normalizeBaseTitle(baseTitle);
   const cached = seasonsCache.get(normBase);
@@ -158,7 +171,11 @@ export async function fetchRelatedSeasons(current: DramaCard): Promise<DramaCard
   });
   const ordered = parsed.map((p) => p.card);
 
-  // 只缓存多季结果：单项结果无缓存价值，缓存它只会让"本次搜索波动"变成"永久不显示"
-  if (ordered.length > 1) seasonsCache.set(normBase, { list: ordered, at: Date.now() });
+  // 只缓存多季结果：单项结果无缓存价值，缓存它只会让"本次搜索波动"变成"永久不显示"；
+  // 同时登记成员索引，系列内任一剧跳转都能命中同系列缓存
+  if (ordered.length > 1) {
+    seasonsCache.set(normBase, { list: ordered, at: Date.now() });
+    for (const card of ordered) memberIndex.set(card.id, normBase);
+  }
   return ordered;
 }

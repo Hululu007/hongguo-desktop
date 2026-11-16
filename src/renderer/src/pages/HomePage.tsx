@@ -154,7 +154,15 @@ function HistoryCard({
  */
 export function HomePage() {
   const { data, loading, error, reload } = useAsync(() => api.getHome(), []);
-  const recs = useAsync(() => fetchRecommendations(12), []);
+  // 猜你喜欢依赖分区数据做排除集（分区已展示的不再推荐，避免选出即被去重过滤）；
+  // 内部带 24h 缓存：命中直接返回，回首页即时稳定显示，不重新搜索计算
+  const recs = useAsync(
+    () =>
+      data
+        ? fetchRecommendations(16, new Set(data.flatMap((s) => s.items.map((d) => d.id))))
+        : Promise.resolve([]),
+    [data],
+  );
   const history = useHistory();
 
   if (loading) return <Loading />;
@@ -204,7 +212,7 @@ export function HomePage() {
     ...slides.map((s) => s.item.id),
     ...sections.flatMap((s) => s.items.map((d) => d.id)),
   ]);
-  const likeItems = recCards.filter((d) => !shownIds.has(d.id)).slice(0, 10);
+  const likeItems = recCards.filter((d) => !shownIds.has(d.id)).slice(0, 12);
 
   return (
     <div className="page home">

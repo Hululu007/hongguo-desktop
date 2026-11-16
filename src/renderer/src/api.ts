@@ -73,6 +73,9 @@ export const api = {
   getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string): Promise<PlayInfo> =>
     hg.getPlayInfo(seriesId, itemId, force, nextVid),
 
+  /** 下一集整集预解密（无感切换）：后台全量拉取+解密入内存缓存，切集时命中缓存零等待 */
+  streamPrefetch: (vid: string): Promise<boolean> => hg.streamPrefetch(vid),
+
   /** 弹幕（官方签名接口，服务层自带缓存/去重/护栏；fresh=true 绕过失败缓存重试） */
   getDanmaku: (seriesId: string, itemId: string, fresh?: boolean): Promise<DanmakuResult> =>
     hg.getDanmaku(seriesId, itemId, fresh),
@@ -160,6 +163,7 @@ declare global {
       getRank(rankKey: string, page?: number): Promise<RankPageResult>;
       getDetail(seriesId: string): Promise<DramaDetail>;
       getPlayInfo(seriesId: string, itemId: string, force?: boolean, nextVid?: string): Promise<PlayInfo>;
+      streamPrefetch(vid: string): Promise<boolean>;
       getAuthState(): Promise<{ token: string; savedAt: number } | null>;
       setAuthToken(raw: string): Promise<{ token: string; savedAt: number }>;
       clearAuthToken(): Promise<boolean>;

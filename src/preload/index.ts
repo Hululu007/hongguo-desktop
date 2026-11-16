@@ -24,6 +24,8 @@ const api = {
    *  nextVid=下一集 id，随本次取址批量预解析（切集零额外请求） */
   getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string) =>
     ipcRenderer.invoke('net:play', seriesId, itemId, force, nextVid),
+  /** 下一集整集预解密（无感切换）：后台全量拉取+解密入内存缓存，切集时命中缓存零等待 */
+  streamPrefetch: (vid: string) => ipcRenderer.invoke('net:stream-prefetch', vid),
   /** 登录态（x-tt-token）：读取当前状态 / 保存粘贴的 token / 清除恢复匿名 */
   getAuthState: () => ipcRenderer.invoke('net:auth-get'),
   setAuthToken: (raw: string) => ipcRenderer.invoke('net:auth-set', raw),

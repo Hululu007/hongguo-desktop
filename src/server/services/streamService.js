@@ -346,6 +346,31 @@ class StreamService {
   }
 
   /**
+   * 立即整集预解密下一集（无感切换）：渲染层在"即将播放下一集"提示出现时（剩余 ≤3s）调用。
+   * 与 prefetch(metadataOnly) 只预热元数据不同，这里直接后台跑全量拉取+解密入缓存；
+   * 全集并行分片拉取约 1~1.5s（见 downloadWithParallelRanges），切集时命中完整内存缓存
+   * 直接进入缓冲分片播放，消除切集卡顿。已缓存/在途则幂等跳过。
+   * @param {string|number} vid - 下一集视频 id
+   * @param {string} [quality='auto'] - 画质（与流请求侧归一化一致，保证缓存键命中）
+   * @returns {void}
+   */
+  prefetchNext(vid, quality = 'auto') {
+    if (!vid || !/^\d{1,30}$/.test(String(vid))) return;
+    const q = normalizeDownloadQuality(quality);
+    const key = `${vid}:${q}`;
+    if (this.cache.has(key) || this.inFlight.has(key)) return;
+    this.getDecryptedBuffer(vid, q, { background: true })
+      .then(() => {
+        logger.info('StreamService', `[Prefetch] 下一集整集预解密完成: vid=${vid}`);
+      })
+      .catch((err) => {
+        if (!/abort/i.test(err?.message || '')) {
+          logger.warn('StreamService', `[Prefetch] 下一集整集预解密失败: vid=${vid}, ${err.message}`);
+        }
+      });
+  }
+
+  /**
    * LRU 缓存修剪
    */
   pruneCache() {

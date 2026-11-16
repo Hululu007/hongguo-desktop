@@ -544,9 +544,11 @@ async function fetchDanmaku(options = {}) {
     collected.sort((a, b) => a.time - b.time);
 
     // 缓存完整结果与完整列表；limit 只在呈现时裁剪，避免缓存被"半截"结果污染。
+    // 空结果按失败短 TTL 处理：设备身份未就绪降级匿名设备时，上游可能分配到空弹幕子集，
+    // 若按成功缓存 5 分钟，期间重进本集一直 0 条，表现为"弹幕未触发"；短 TTL 尽快重试。
     const result = finalize({ seriesId, vid, items: collected, truncated, error: failure });
     cache.set(cacheKey, {
-      expires: Date.now() + (failure ? CACHE_TTL_FAIL : CACHE_TTL_OK),
+      expires: Date.now() + (failure || collected.length === 0 ? CACHE_TTL_FAIL : CACHE_TTL_OK),
       items: collected,
       result,
     });

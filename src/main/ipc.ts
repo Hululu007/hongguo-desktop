@@ -275,7 +275,7 @@ let cache: StoreData | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** 渲染层允许持久化的 storage key 白名单（对应 stores.ts 的 KEY 集合） */
-const STORAGE_KEYS = new Set(['favorites', 'history', 'settings', 'searchHistory', 'recommend.impressions.v1']);
+const STORAGE_KEYS = new Set(['favorites', 'history', 'settings', 'searchHistory', 'recommend.impressions.v1', 'recommend.list.v1']);
 /** 单键 value 体积上限（序列化后 2MB，防异常大数据撑爆本地存储） */
 const STORAGE_VALUE_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -511,6 +511,12 @@ export function registerIpc(): void {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('无效的参数: force');
     if (nextVid !== undefined && typeof nextVid !== 'string') throw new Error('无效的参数: nextVid');
     return resolvePlay(seriesId, itemId, force, nextVid);
+  }));
+  // 下一集整集预解密（无感切换）：幂等后台任务，失败静默（播放侧自会走常规流式兜底）
+  ipcMain.handle('net:stream-prefetch', userFacing(async (_e, vid: string) => {
+    assertId(vid, '分集ID');
+    hg.streamService.prefetchNext(vid, 'auto');
+    return true;
   }));
   // 弹幕（官方签名接口；fetchDanmaku 不抛错，异常统一转为 success:false + 中文说明）
   ipcMain.handle('net:danmaku', (_e, seriesId: string, itemId: string, fresh?: boolean) =>
