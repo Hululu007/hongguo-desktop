@@ -17,9 +17,8 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
 
   playerWin = new BrowserWindow({
     width: 1080,
-    height: 660,
-    minWidth: 320, // 沉浸式：宽度会跟随竖屏视频比例收窄
-    minHeight: 420,
+    height: 608, // 16:9 与视频画面一致（1080×608），拖拽调宽时高度按比例自适应
+    minWidth: 400, // 控制栏（进度条+按钮组）在 400px 以下会被挤压，禁止再窄
     frame: false, // 无边框：标题由播放器顶部栏自己画（可拖拽 + 关闭按钮）
     backgroundColor: '#000000',
     show: false,
@@ -30,6 +29,8 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
       nodeIntegration: false,
     },
   });
+  // 高度按 16:9 比例跟随宽度自适应（用户拖拽窗口边缘时生效）
+  playerWin.setAspectRatio(16 / 9);
 
   playerWin.once('ready-to-show', () => playerWin?.show());
   playerWin.on('closed', () => {
