@@ -17,8 +17,9 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
 
   playerWin = new BrowserWindow({
     width: 1080,
-    height: 608, // 16:9 与视频画面一致（1080×608），拖拽调宽时高度按比例自适应
-    minWidth: 400, // 控制栏（进度条+按钮组）在 400px 以下会被挤压，禁止再窄
+    height: 608, // 16:9 与视频画面一致（1080×608），实际比例由视频元数据加载后 fitToVideo 校正
+    minWidth: 400, // 仅作为绝对下限（控制栏在 400px 以下会被挤压），不影响按视频比例自适应的业务逻辑
+    minHeight: 400, // 控制栏纵向可用空间下限
     frame: false, // 无边框：标题由播放器顶部栏自己画（可拖拽 + 关闭按钮）
     backgroundColor: '#000000',
     show: false,
@@ -29,8 +30,8 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
       nodeIntegration: false,
     },
   });
-  // 高度按 16:9 比例跟随宽度自适应（用户拖拽窗口边缘时生效）
-  playerWin.setAspectRatio(16 / 9);
+  // 注意：不在此处硬编码 setAspectRatio(16/9) —— 比例必须跟随真实视频
+  // （横屏视频→横屏窗口、竖屏视频→竖屏窗口），元数据加载后由 win:fitToVideo 动态设置。
 
   playerWin.once('ready-to-show', () => playerWin?.show());
   playerWin.on('closed', () => {

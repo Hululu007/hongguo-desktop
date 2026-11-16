@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
 import { randomUUID } from 'crypto';
 import { copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -598,15 +598,34 @@ export function registerIpc(): void {
     createPlayerWindow(assertId(seriesId, '剧集ID'), assertId(itemId, '分集ID'));
   });
 
-  /** 沉浸式：窗口高度固定，宽度跟随视频宽高比（ratio = videoWidth / videoHeight） */
+  /** 沉浸式初始化：窗口尺寸按视频宽高比计算一次（ratio = videoWidth / videoHeight）。
+   *  比例仅用于初始化，不锁定拖拽（不调用 setAspectRatio），用户可自由调整窗口大小。
+   *  每个窗口只 fit 一次：切下一集时即使分辨率/比例有细微差异也不改尺寸、不居中，
+   *  窗口位置固定在用户移动后的位置。横屏（ratio ≥ 1）高度沿用当前、宽度 = 高 × 比例
+   *  （最小宽 711px = 400 高 × 16/9）；竖屏（ratio < 1）宽度取下限 400px、高度 = 宽 ÷ 比例
+   *  （9:16 即 711px），不超过工作区。 */
+  const fittedWins = new WeakSet<BrowserWindow>();
   ipcMain.handle('win:fitToVideo', (e, ratio: number) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win || !Number.isFinite(ratio) || ratio <= 0) return false;
-    const height = win.getContentSize()[1];
-    const width = Math.round(Math.min(1280, Math.max(320, height * ratio)));
-    const prev = win.getContentSize()[0];
+    // 已初始化过：什么都不做（保留用户调整后的尺寸与位置）
+    if (fittedWins.has(win)) return true;
+    fittedWins.add(win);
+    const minW = Math.max(400, Math.round(400 * ratio)); // 横屏 16:9 → 711；竖屏 → 400
+    let width: number;
+    let height: number;
+    if (ratio >= 1) {
+      height = win.getContentSize()[1];
+      width = Math.round(Math.min(1280, Math.max(minW, height * ratio)));
+    } else {
+      width = minW;
+      const workH = screen.getPrimaryDisplay().workAreaSize.height;
+      height = Math.round(Math.min(workH - 40, Math.max(400, width / ratio)));
+    }
+    win.setMinimumSize(Math.min(minW, width), 400);
+    const prev = win.getContentSize();
     win.setContentSize(width, height);
-    if (prev !== width) win.center();
+    if (prev[0] !== width || prev[1] !== height) win.center();
     return true;
   });
 
