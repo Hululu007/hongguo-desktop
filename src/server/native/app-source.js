@@ -681,9 +681,10 @@ function assertCircuitClosed() {
 }
 
 /** 当前设备是否已成功取到过播放地址（设备健康度）。
- *  已实证：空响应是 IP 级风控窗口，换设备同样失败。设备一旦验证可用，
- *  空响应一律视为风控窗口——不再自动换设备（纯耗注册配额，还会加重风控），
- *  同设备重试后直接收敛报错，交给熔断器与用户重试。 */
+ *  空响应多数是服务端对当前设备身份的静默拒绝（内置基准设备为公开共享身份，易被标记）；
+ *  降级链终局会注册全新匿名设备重试（实测可恢复，见 fetchAppPlayUrlInner）。
+ *  设备一旦验证可用，同进程内的空响应仍优先按风控窗口处理——同设备重试收敛，
+ *  避免每次失败都消耗注册配额；熔断器与用户手动「重置设备」兜底。 */
 let deviceProvenGood = false;
 
 /**
@@ -778,6 +779,32 @@ async function fetchAppPlayUrlInner(vid, options = {}) {
         } catch { /* 降级失败不影响原始错误上抛 */ }
         throw rethrowErr;
     };
+    // 终局恢复阶梯：原设备/基准设备主备通道均空响应后，注册一个全新匿名设备重试一轮，
+    // 仍失败再走短剧降级通道。背景：内置基准设备是仓库里公开的共享身份，可能已被服务端
+    // 标记为静默拒绝；实测同一网络下新注册设备可立即恢复播放（参考项目 2026-11-16 日志），
+    // 说明空响应并非总是 IP 级风控窗口，"换设备无用"的旧假设不再成立。
+    const tryFreshDeviceThenShortplay = async (rethrowErr) => {
+        let fresh = null;
+        try {
+            fresh = await getPlaybackDevice.rotateDevice(execRequestJson, signal);
+            logger.warn('AppSource', `主备通道均空响应，已注册全新匿名设备重试: device_id=…${String(fresh.device_id).slice(-6)}, model=${fresh.profile?.model ?? '-'}`);
+        } catch { /* 注册失败（网络/冷却）不阻塞后续降级 */ }
+        if (fresh) {
+            try {
+                return await sendWith(fresh, VIDEO_API);
+            } catch (freshErr) {
+                signal.throwIfAborted();
+                if (freshErr.code !== 'EMPTY_RESPONSE') return await shortplayFallback(fresh, rethrowErr);
+                try {
+                    return await sendWith(fresh, VIDEO_API_FALLBACK);
+                } catch (freshErr2) {
+                    signal.throwIfAborted();
+                    return await shortplayFallback(fresh, rethrowErr);
+                }
+            }
+        }
+        return await shortplayFallback(device, rethrowErr);
+    };
     let response;
     // L0 静默拒绝诊断字段（bytes/logid/设备后四位/机型）：一行日志即可定位签名/设备/配额层
     const diag = (err) => [err.bytes != null ? `bytes=${err.bytes}` : '', err.logid ? `logid=${err.logid}` : '',
@@ -818,14 +845,14 @@ async function fetchAppPlayUrlInner(vid, options = {}) {
                                 response = await sendWith(baselineDevice, VIDEO_API_FALLBACK);
                             } catch (secondFallbackErr) {
                                 signal.throwIfAborted();
-                                // 终极降级：番茄小说短剧接口；仍失败则重抛备用通道错误
-                                response = await shortplayFallback(baselineDevice, secondFallbackErr);
+                                // 基准设备主备通道仍空响应：注册全新匿名设备再试一轮，最后才降级短剧通道
+                                response = await tryFreshDeviceThenShortplay(secondFallbackErr);
                             }
                         }
                     }
                 } else {
-                    // 当前已是基准设备：主备通道仍空响应，直接走短剧降级通道
-                    response = await shortplayFallback(device, fallbackErr);
+                    // 当前已是基准设备：主备通道仍空响应，注册全新匿名设备再试一轮，最后才降级短剧通道
+                    response = await tryFreshDeviceThenShortplay(fallbackErr);
                 }
             }
         }
