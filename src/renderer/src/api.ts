@@ -69,12 +69,13 @@ export const api = {
   /** 剧集详情 + 全部分集（官网 player 页 HTML 解析） */
   getDetail: (seriesId: string): Promise<DramaDetail> => hg.getDetail(seriesId),
 
-  /** 播放元信息：本地解密流地址（主进程先解析播放地址，快速失败给出可读错误） */
-  getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string): Promise<PlayInfo> =>
-    hg.getPlayInfo(seriesId, itemId, force, nextVid),
+  /** 播放元信息：本地解密流地址（主进程先解析播放地址，快速失败给出可读错误）。
+   *  allowHevc：渲染层 HEVC 硬解探测结果，false 时主进程在流地址追加 hevc=0 */
+  getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean): Promise<PlayInfo> =>
+    hg.getPlayInfo(seriesId, itemId, force, nextVid, allowHevc),
 
   /** 下一集整集预解密（无感切换）：后台全量拉取+解密入内存缓存，切集时命中缓存零等待 */
-  streamPrefetch: (vid: string): Promise<boolean> => hg.streamPrefetch(vid),
+  streamPrefetch: (vid: string, allowHevc?: boolean): Promise<boolean> => hg.streamPrefetch(vid, allowHevc),
 
   /** 重置播放设备：重新注册全新匿名设备并作废旧设备缓存，返回新设备身份 */
   resetDevice: (): Promise<{ device_id: string; iid: string }> => hg.resetDevice(),
@@ -165,8 +166,8 @@ declare global {
       getCategory(main: string, sub?: string, page?: number): Promise<CategoryPageResult>;
       getRank(rankKey: string, page?: number): Promise<RankPageResult>;
       getDetail(seriesId: string): Promise<DramaDetail>;
-      getPlayInfo(seriesId: string, itemId: string, force?: boolean, nextVid?: string): Promise<PlayInfo>;
-      streamPrefetch(vid: string): Promise<boolean>;
+      getPlayInfo(seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean): Promise<PlayInfo>;
+      streamPrefetch(vid: string, allowHevc?: boolean): Promise<boolean>;
       resetDevice(): Promise<{ device_id: string; iid: string }>;
       getAuthState(): Promise<{ token: string; savedAt: number } | null>;
       setAuthToken(raw: string): Promise<{ token: string; savedAt: number }>;

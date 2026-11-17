@@ -190,7 +190,7 @@ function persistDevice(device, strict = false) {
             ...(lastPlayOk ? { last_play_ok: lastPlayOk } : {}),
         }, null, 2);
         const tmpPath = `${identityFilePath()}.tmp.${Date.now()}`;
-        fs.writeFileSync(tmpPath, payload, 'utf8');
+        fs.writeFileSync(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
         fs.renameSync(tmpPath, identityFilePath());
         logger.info('PlaybackDevice', `播放设备凭据已持久化: ${identityFilePath()}`);
     } catch (error) {
@@ -314,31 +314,31 @@ function createPlaybackDeviceRegistrar(options = {}) {
     };
     const registrar = function getPlaybackDevice(requestJson, signal) {
         if (signal?.aborted) return Promise.reject(signal.reason);
+        // 同步复用路径（demo 重构）：内存设备直接返回；持久化独立设备复用；
+        // 持久化为基准设备时不再直接复用，而是触发注册迁移升级为独立设备
+        // （demo 上游策略：基准设备仅作为注册失败/换新失败时的保底，不再作为首选身份）
+        if (currentDevice) return Promise.resolve(currentDevice);
+        if (persist) {
+            const loaded = loadPersistedDevice();
+            if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
+                currentDevice = loaded;
+                logger.info('PlaybackDevice', `复用播放设备: device_id=${loaded.device_id}, iid=${loaded.iid}`);
+                return Promise.resolve(currentDevice);
+            }
+            if (loaded && loaded.device_id === DEFAULT_VERIFIED_DEVICE.device_id) {
+                logger.info('PlaybackDevice', `检测到本地使用基准静态设备 (device_id=${loaded.device_id})，准备自动迁移为独立注册设备...`);
+            }
+        }
+        if (rotation) return waitForRegistration(rotation, signal);
         // Concurrent playback/search requests share registration. Retries reuse the
         // same encrypted payload and identity, including after an exhausted attempt.
         registration ||= Promise.resolve().then(async () => {
-            // 1) 优先复用内存/持久化身份：一次注册跨重启共享，避免频繁新设备触发风控
-            //    （persist=false 的临时注册器——如 rotateDevice 候选——不读持久化文件，
-            //    否则候选会复用主设备而无法注册全新设备）
-            const reused = currentDevice || (persist ? loadPersistedDevice() : null);
-            if (reused) {
-                currentDevice = reused;
-                logger.info('PlaybackDevice', `复用播放设备: device_id=${reused.device_id}, iid=${reused.iid}`);
-                return reused;
-            }
-            // 2) 基准设备优先（PR#92）：无本地身份时直接复用内置已验证设备，不再强制注册
-            if (persist) {
-                currentDevice = DEFAULT_VERIFIED_DEVICE;
-                persistDevice(currentDevice);
-                logger.info('PlaybackDevice', `已初始化基准播放设备: device_id=${currentDevice.device_id}, iid=${currentDevice.iid}`);
-                return currentDevice;
-            }
-            // 3) 注册失败冷却期内快速失败，不再请求注册接口
+            // 1) 注册失败冷却期内快速失败，不再请求注册接口
             if (Date.now() - lastRegFailAt < REG_FAIL_COOLDOWN_MS) {
                 const wait = Math.ceil((REG_FAIL_COOLDOWN_MS - (Date.now() - lastRegFailAt)) / 1000);
                 throw Object.assign(new Error(`设备注册冷却中，请 ${wait}s 后重试`), { code: 'RATE_LIMITED' });
             }
-            // 每次注册从真机指纹池随机选一款机型（同一设备的所有后续请求使用同一档案）
+            // 2) 每次注册从真机指纹池随机选一款机型（同一设备的所有后续请求使用同一档案）
             const profile = pickRandomProfile();
             request ||= createRegistrationRequest(profile);
             logger.info('PlaybackDevice', `开始匿名设备注册, cdid=${request.cdid}, model=${profile.model}`);
@@ -392,19 +392,30 @@ function createPlaybackDeviceRegistrar(options = {}) {
             if (error.code !== 'RATE_LIMITED') lastRegFailAt = Date.now();
             const reason = error.status ? `HTTP ${error.status}` : error.code || 'INVALID_RESPONSE';
             logger.error('PlaybackDevice', `匿名设备注册失败: ${reason}`);
+            // demo 新增：注册失败降级基准设备保底（正式环境），保证弱网/注册接口受阻时仍可播放
+            if (options.fallback !== false && process.env.NODE_ENV !== 'test') {
+                logger.warn('PlaybackDevice', `注册失败，自动降级使用基准播放设备保底: device_id=${DEFAULT_VERIFIED_DEVICE.device_id}`);
+                currentDevice = DEFAULT_VERIFIED_DEVICE;
+                jar = undefined;
+                return currentDevice;
+            }
             throw Object.assign(new Error(`匿名播放设备注册失败（${reason}），请稍后重试`), {
                 code: 'DEVICE_REGISTRATION_FAILED', cause: error,
             });
         });
         return waitForRegistration(registration, signal);
     };
-    /** 同步读取当前活跃设备（内存优先，持久化兜底；不触发注册、不含基准设备——
-     *  demo 重构语义：元数据等旁路请求仅在存在独立注册设备时与播放同源） */
+    /** 同步读取当前活跃设备（内存优先，持久化兜底；不触发注册。
+     *  demo 重构语义：含基准设备——元数据等旁路请求与播放设备始终同源，
+     *  基准设备保底期间旁路请求同样使用基准身份，保证设备参数一致性） */
     registrar.getCurrentDevice = function getCurrentDevice() {
-        if (currentDevice && currentDevice.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) return currentDevice;
+        if (currentDevice) return currentDevice;
         if (persist) {
             const loaded = loadPersistedDevice();
-            if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) return loaded;
+            if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
+                currentDevice = loaded;
+                return currentDevice;
+            }
         }
         return null;
     };
@@ -496,7 +507,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
                 // Let an earlier registration finish before replacing its result.
                 if (registration) await registration.catch(() => {});
                 logger.info('PlaybackDevice', '收到用户主动更换设备指令，开始注册全新的独立匿名设备...');
-                const candidate = createPlaybackDeviceRegistrar({ persist: false });
+                const candidate = createPlaybackDeviceRegistrar({ persist: false, fallback: false });
                 const newDevice = await candidate(requestJson);
                 currentDevice = newDevice;
                 jar = undefined;

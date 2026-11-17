@@ -142,8 +142,8 @@ declare module '@hongguo/server' {
     };
     streamService: {
       handleStream(req: unknown, res: unknown, vid: string): void;
-      prefetch(vid: string, quality?: string, force?: boolean, timeout?: number, nextVids?: string[]): void;
-      prefetchNext(vid: string, quality?: string): void;
+      prefetch(vid: string, quality?: string, force?: boolean, timeout?: number, nextVids?: string[], allowHevc?: boolean): void;
+      prefetchNext(vid: string, quality?: string, allowHevc?: boolean): void;
     };
     storeService: Record<string, (...args: unknown[]) => unknown>;
     logger: { info(tag: string, msg: string): void; warn(tag: string, msg: string): void; error(tag: string, msg: string): void };

@@ -21,11 +21,12 @@ const api = {
   /** 详情（官网 player 页解析，含全部分集 vid） */
   getDetail: (seriesId: string) => ipcRenderer.invoke('net:detail', seriesId),
   /** 播放信息：本地解密流地址；force=true 重置解密计划（签名过期/错误重试）；
-   *  nextVid=下一集 id，随本次取址批量预解析（切集零额外请求） */
-  getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string) =>
-    ipcRenderer.invoke('net:play', seriesId, itemId, force, nextVid),
+   *  nextVid=下一集 id，随本次取址批量预解析（切集零额外请求）；
+   *  allowHevc=渲染层 HEVC 硬解探测结果，false 时流地址追加 hevc=0（H264/转码兜底） */
+  getPlayInfo: (seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean) =>
+    ipcRenderer.invoke('net:play', seriesId, itemId, force, nextVid, allowHevc),
   /** 下一集整集预解密（无感切换）：后台全量拉取+解密入内存缓存，切集时命中缓存零等待 */
-  streamPrefetch: (vid: string) => ipcRenderer.invoke('net:stream-prefetch', vid),
+  streamPrefetch: (vid: string, allowHevc?: boolean) => ipcRenderer.invoke('net:stream-prefetch', vid, allowHevc),
   /** 重置播放设备：重新注册全新匿名设备并作废旧设备缓存（连续播放失败后的恢复手段） */
   resetDevice: () => ipcRenderer.invoke('net:device-reset'),
   /** 登录态（x-tt-token）：读取当前状态 / 保存粘贴的 token / 清除恢复匿名 */

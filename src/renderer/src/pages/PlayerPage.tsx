@@ -8,6 +8,7 @@ import { ErrorTip, Loading } from '../components/Feedback';
 import { toast } from '../components/Toast';
 import Danmaku, { type DanmakuComment } from '../lib/danmaku.dom.js';
 import { renderDanmakuText } from '../lib/danmakuEmoji';
+import { probeHevcSupportSync, verifyHevcSupport } from '../lib/hevc';
 import {
   IconFullscreen, IconPause, IconPlay, IconPrevEp, IconNextEp, IconVolume, IconWarning,
   IconEpList,
@@ -291,6 +292,19 @@ export function PlayerPage() {
 
   // ===== 视频直链（随集切换；force 跳过主进程缓存重取） =====
   const retryRef = useRef(0);
+  // HEVC 硬解能力（同步探测 + MediaCapabilities 异步校验，进程内缓存）；
+  // 取址/预取随参数透传，服务端据此选择 H264 片源或 ffmpeg 转码兜底
+  const hevcSupportedRef = useRef(probeHevcSupportSync());
+  const hevcFallbackRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    void verifyHevcSupport().then((ok) => {
+      if (alive) hevcSupportedRef.current = ok;
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   // 下一集 id 用 ref 传递：若作为 resolveVideo 依赖，详情加载后会重跑取址 effect 多发 net:play（任务 24 回归）
   const nextVidRef = useRef('');
   nextVidRef.current = nextEp?.id || '';
@@ -327,7 +341,7 @@ export function PlayerPage() {
       setDur(0);
       setBuffered(0);
       return api
-        .getPlayInfo(seriesId, itemId, force, nextVidRef.current)
+        .getPlayInfo(seriesId, itemId, force, nextVidRef.current, hevcSupportedRef.current)
         .then((info) => {
           if (!info.videoUrl) throw new Error('未取到视频地址，请稍后重试');
           setVideoUrl(info.videoUrl);
@@ -424,6 +438,14 @@ export function PlayerPage() {
       // 沉浸式：窗口高度固定，宽度跟随视频宽高比
       if (v.videoWidth && v.videoHeight) {
         void api.win.fitToVideo(v.videoWidth / v.videoHeight);
+      }
+      // demo 新增：运行时 HEVC 兜底——探测为支持但画面 0×0（解码失败）时，
+      // 一次性降级为 hevc=0 强制刷新流地址（服务端换 H264 片源或转码兜底）
+      if (hevcSupportedRef.current && !v.videoWidth && !v.videoHeight && !hevcFallbackRef.current) {
+        hevcFallbackRef.current = true;
+        hevcSupportedRef.current = false;
+        setTimeout(() => void resolveVideo(true), 400);
+        return;
       }
       if (saved && saved.positionSec > 5 && saved.positionSec < (v.duration || Infinity) - 5) {
         v.currentTime = saved.positionSec;
@@ -811,7 +833,7 @@ export function PlayerPage() {
   // ===== 下一集预加载（无感切换）："即将播放"提示出现（剩余 ≤3s）时后台整集预解密下一集，
   // 切集时主进程命中完整内存缓存直接进入缓冲播放，消除切集卡顿缓冲。幂等，重复触发自动跳过
   useEffect(() => {
-    if (nextTip && nextEp?.id) void api.streamPrefetch(nextEp.id).catch(() => { });
+    if (nextTip && nextEp?.id) void api.streamPrefetch(nextEp.id, hevcSupportedRef.current).catch(() => { });
   }, [nextTip, nextEp]);
 
   // ===== video 事件（JSX 里绑定的小工具） =====

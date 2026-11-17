@@ -242,8 +242,9 @@ function ensureStreamServer(): Promise<void> {
 }
 
 /** 播放元信息 + 流地址：先解析一次播放地址（快速失败给出可读错误），再发预取。
- *  nextVid：下一集 id，随本次批量取址一并解析并进入 entryCache，切集时零额外签名请求。 */
-async function resolvePlay(seriesId: string, itemId: string, force?: boolean, nextVid?: string): Promise<{ videoUrl: string; format: 'mp4' }> {
+ *  nextVid：下一集 id，随本次批量取址一并解析并进入 entryCache，切集时零额外签名请求。
+ *  allowHevc：渲染层 HEVC 硬解探测结果（false 时流地址追加 hevc=0，走 H264/转码兜底）。 */
+async function resolvePlay(seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean): Promise<{ videoUrl: string; format: 'mp4' }> {
   assertId(seriesId, '剧集ID');
   await ensureStreamServer();
   const vid = String(itemId ?? '').trim();
@@ -258,12 +259,15 @@ async function resolvePlay(seriesId: string, itemId: string, force?: boolean, ne
   // 预取当前集（与 demo 客户端行为一致），失败不影响播放；
   // 流端点侧同时带上 next_vid，播放稳定后由 streamService 二次兜底预取
   try {
-    hg.streamService.prefetch(vid, 'auto', true, 45000, nextArg ? [nextArg] : []);
+    hg.streamService.prefetch(vid, 'auto', true, 45000, nextArg ? [nextArg] : [], allowHevc !== false);
   } catch {
     /* 预取失败由流端点自行兜底 */
   }
-  const refresh = force ? `?refresh=${Date.now()}` : '';
-  return { videoUrl: `${streamBase}/stream/${streamToken}/${vid}${refresh}`, format: 'mp4' };
+  const params: string[] = [];
+  if (force) params.push(`refresh=${Date.now()}`);
+  if (allowHevc === false) params.push('hevc=0');
+  const qs = params.length ? `?${params.join('&')}` : '';
+  return { videoUrl: `${streamBase}/stream/${streamToken}/${vid}${qs}`, format: 'mp4' };
 }
 
 // ===== 本地持久化（渲染层 zustand stores 用） =====
@@ -507,15 +511,17 @@ export function registerIpc(): void {
     if (ticket !== undefined && typeof ticket !== 'string') throw new Error('无效的参数: ticket');
     return hg.login.loginWithCode(mobile, code, ticket ?? '');
   }));
-  ipcMain.handle('net:play', userFacing((_e, seriesId: string, itemId: string, force?: boolean, nextVid?: string) => {
+  ipcMain.handle('net:play', userFacing((_e, seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('无效的参数: force');
     if (nextVid !== undefined && typeof nextVid !== 'string') throw new Error('无效的参数: nextVid');
-    return resolvePlay(seriesId, itemId, force, nextVid);
+    if (allowHevc !== undefined && typeof allowHevc !== 'boolean') throw new Error('无效的参数: allowHevc');
+    return resolvePlay(seriesId, itemId, force, nextVid, allowHevc);
   }));
   // 下一集整集预解密（无感切换）：幂等后台任务，失败静默（播放侧自会走常规流式兜底）
-  ipcMain.handle('net:stream-prefetch', userFacing(async (_e, vid: string) => {
+  ipcMain.handle('net:stream-prefetch', userFacing(async (_e, vid: string, allowHevc?: boolean) => {
     assertId(vid, '分集ID');
-    hg.streamService.prefetchNext(vid, 'auto');
+    if (allowHevc !== undefined && typeof allowHevc !== 'boolean') throw new Error('无效的参数: allowHevc');
+    hg.streamService.prefetchNext(vid, 'auto', allowHevc !== false);
     return true;
   }));
   // 重置播放设备（播放页连续失败后的恢复手段）：重新注册全新匿名设备并作废旧设备缓存
