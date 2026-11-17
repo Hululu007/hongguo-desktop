@@ -5,7 +5,9 @@
  * - SSR router 数据（data-fn-args 脚本）→ 推荐位 videoList / 热门 hot_list
  * - SSR 直出的剧评 article 卡片 → 热评（标题/评分/内容/作者/时间/点赞）
  */
-const cheerio = require('cheerio');
+// 用 slim 子入口（仅 DOM 解析，本文件只用 cheerio.load）：主入口会连带打包 undici，
+// 其 cacheStores 模块 require('node:sqlite')（Electron 内置 Node 无此模块）→ 打包后启动即崩 ERR_UNKNOWN_BUILTIN_MODULE
+const cheerio = require('cheerio/slim');
 const axios = require('axios');
 const logger = require('../services/logger');
 const { cleanTitle } = require('./hongguo-app-search');

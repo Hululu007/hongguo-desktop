@@ -12,6 +12,16 @@ const logger = require('./logger');
 class DramaService {
   constructor() {
     this.searchSessions = new Map();
+    // 任务 63 风暴治理：短剧详情/分类列表的短 TTL 结果缓存 + 并发在途共享
+    // （StrictMode 双挂载/双击会让同一请求连发两轮，直接放大上游请求量）
+    /** @type {Map<string, {data: object, expires: number}>} 详情结果缓存（30s TTL） */
+    this.detailCache = new Map();
+    /** @type {Map<string, Promise<object>>} 详情在途请求（并发去重） */
+    this.detailInflight = new Map();
+    /** @type {Map<string, {data: object, expires: number}>} 分类列表结果缓存（15s TTL） */
+    this.catalogCache = new Map();
+    /** @type {Map<string, Promise<object>>} 分类列表在途请求（并发去重） */
+    this.catalogInflight = new Map();
   }
 
   /**
@@ -62,18 +72,37 @@ class DramaService {
   }
 
   /**
-   * 浏览剧场列表/分类
+   * 浏览剧场列表/分类（任务 63：短 TTL 缓存 + 在途共享，吸收重复请求）
    */
   async catalog(options = {}) {
     const page = Number(options.page) || 1;
     const category = options.category || 'hot-drama';
     const genre = options.genre || '';
+    const cacheKey = `${page}|${category}|${genre}`;
+    const cached = this.catalogCache.get(cacheKey);
+    if (cached?.expires > Date.now()) return cached.data;
+    if (this.catalogInflight.has(cacheKey)) return this.catalogInflight.get(cacheKey);
+    const p = this.fetchCatalog(page, category, genre).finally(() => this.catalogInflight.delete(cacheKey));
+    this.catalogInflight.set(cacheKey, p);
+    return p;
+  }
+
+  /**
+   * 分类列表实际拉取（无去重，供 catalog 包装调用）
+   * @param {number} page - 页码
+   * @param {string} category - 分类标识
+   * @param {string} genre - 题材筛选
+   * @returns {Promise<object>} 分类列表结果
+   * @throws {Error} 非热播分类且 App 目录接口失败时抛出
+   */
+  async fetchCatalog(page, category, genre) {
     const t0 = Date.now();
     logger.info('DramaService', `获取分类短剧列表 category=${category}, genre="${genre}", page=${page}`);
     try {
       const res = await hgCatalog.browseList({ page, category, genre });
       if (res && res.success !== false && Array.isArray(res.results)) {
         logger.info('DramaService', `成功获取分类短剧: 返回 ${res.results.length} 部短剧, total=${res.total}, 耗时 ${Date.now() - t0}ms`);
+        this.catalogCache.set(`${page}|${category}|${genre}`, { data: res, expires: Date.now() + 15000 });
         return res;
       }
     } catch (e) {
@@ -88,13 +117,15 @@ class DramaService {
       const fallback = await this.search('热播', page);
       if (fallback && Array.isArray(fallback.results) && fallback.results.length > 0) {
         logger.info('DramaService', `热播降级搜索成功: 返回 ${fallback.results.length} 条, 耗时 ${Date.now() - t0}ms`);
-        return {
+        const wrapped = {
           results: fallback.results,
           page,
           total: fallback.total || fallback.results.length,
           hasMore: fallback.hasMore || false,
           fallback: true
         };
+        this.catalogCache.set(`${page}|${category}|${genre}`, { data: wrapped, expires: Date.now() + 15000 });
+        return wrapped;
       }
     } catch (e) {
       logger.error('DramaService', `热播降级搜索亦失败: ${e.message}`);
@@ -104,11 +135,26 @@ class DramaService {
   }
 
   /**
-   * 获取剧集详情及全部分集列表
+   * 获取剧集详情及全部分集列表（任务 63：短 TTL 缓存 + 在途共享，吸收重复请求）
    */
   async getSeriesDetail(seriesId) {
     if (!seriesId) throw new Error('缺少 series_id 参数');
     const sid = String(seriesId).trim();
+    const cached = this.detailCache.get(sid);
+    if (cached?.expires > Date.now()) return cached.data;
+    if (this.detailInflight.has(sid)) return this.detailInflight.get(sid);
+    const p = this.fetchSeriesDetail(sid).finally(() => this.detailInflight.delete(sid));
+    this.detailInflight.set(sid, p);
+    return p;
+  }
+
+  /**
+   * 短剧详情实际拉取（无去重，供 getSeriesDetail 包装调用）
+   * @param {string} sid - 剧集编号
+   * @returns {Promise<object>} 详情与分集列表
+   * @throws {Error} 未获取到分集列表时抛出
+   */
+  async fetchSeriesDetail(sid) {
     const t0 = Date.now();
     logger.info('DramaService', `正在获取短剧分集详情 seriesId=${sid}`);
     const data = await hg.fetchEpisodeList(sid);
@@ -117,7 +163,7 @@ class DramaService {
       throw new Error('未获取到该短剧的分集列表');
     }
     logger.info('DramaService', `成功获取短剧详情: 《${data.series_title || ''}》(seriesId=${sid}), 共 ${data.episodes.length} 集, 耗时 ${Date.now() - t0}ms`);
-    return {
+    const result = {
       series_id: sid,
       series_title: data.series_title || '',
       cover: data.cover || '',
@@ -136,6 +182,9 @@ class DramaService {
         cover: ep.cover || data.cover
       }))
     };
+    this.detailCache.set(sid, { data: result, expires: Date.now() + 30000 });
+    while (this.detailCache.size > 16) this.detailCache.delete(this.detailCache.keys().next().value);
+    return result;
   }
 
   /**

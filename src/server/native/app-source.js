@@ -5,61 +5,33 @@
 // Changes: registered in-memory playback identity; pure JS SM3;
 // bounded HTTPS transport; exact episode matching; supported codec selection.
 // Crypto tables and SDK protocol constants below are not user credentials.
+// 任务 64：播放地址获取已整体迁移至 src/server/play（v5 移动端签名，PR#106），
+// 本文件仅保留搜索/目录/元数据/登录域的 v3 签名、传输层（requestJson）与
+// 详情/分集域（hongguo.js 复用）的 legacy playbackRequest。
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
 const logger = require('../services/logger');
-const { getPlaybackDevice, DEFAULT_PROFILE, DEFAULT_VERIFIED_DEVICE } = require('./playback-device');
+const { getPlaybackDevice, DEFAULT_PROFILE } = require('./playback-device');
 const loginState = require('./login-state');
 const { deviceKey } = require('./device-session');
+// 播放取址门面（fetchAppPlayUrl/clearEntryCache/isHevcCodec/shortplayRequest）
+const play = require('../play');
+// 与播放模块共享的传输/编码工具（jsonBody/checkedUrl/buildUa/VIDEO_UA）
+const { buildUa, VIDEO_UA, jsonBody, checkedUrl } = require('../play/util');
 
 // 端点 origin 集中参数化（对照风控分析文档 §六.7）：TTNet 会整体迁域，迁域时
 // 表现为「全量 200+0」，届时只需改这里并重新抓包对齐，不必散改各处常量。
-// PR#92：播放域主通道迁移至 reading.snssdk.com（multi_video_model/player/v1），
-// 备用通道 api5-normal-sinfonlinea；弹幕评论域与搜索域保持不变
+// 播放域端点阶梯已随任务 64 迁至 src/server/play/upstream.js（VIDEO_APIS/SHORTPLAY_APIS）
 const ORIGINS = {
-    playback: 'https://reading.snssdk.com',
-    playbackFallback: 'https://api5-normal-sinfonlinea.fqnovel.com',
     comment: 'https://api5-normal-sinfonlineb.fqnovel.com',
     search: 'https://api5-normal-sinfonlinea.fqnovel.com',
 };
 const sm3 = require('./sm3');
 const { PlayerSigner } = require('./argus');
-const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
 const localId = () => String(1000000000000000n + BigInt('0x' + crypto.randomBytes(6).toString('hex')));
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
-const VIDEO_API = `${ORIGINS.playback}/novel/player/multi_video_model/player/v1`;
-const VIDEO_API_FALLBACK = `${ORIGINS.playbackFallback}/novel/player/multi_video_model/player/v1`;
-// demo 新增：多端点阶梯（5 播放通道 + 3 短剧通道），runPlaybackSteps 依次尝试并记忆偏好路由
-const VIDEO_APIS = [
-    VIDEO_API,
-    VIDEO_API_FALLBACK,
-    'https://api5-normal-lq.fqnovel.com/novel/player/multi_video_model/player/v1',
-    'https://is.snssdk.com/novel/player/multi_video_model/player/v1',
-    'https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/player/v1',
-];
-// 番茄小说客户端短剧接口（aid 1967）：红果主备通道全受阻时的终极降级通道（PR#92）
-const SHORTPLAY_API = 'https://api3-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/';
-const SHORTPLAY_APIS = [
-    SHORTPLAY_API,
-    'https://api5-normal-lq.fqnovel.com/novel/player/video_model/v1/',
-    'https://reading.snssdk.com/novel/player/video_model/v1/',
-];
 const SEARCH_API = `${ORIGINS.search}/reading/bookapi/search/tab/v`;
-const CRONET_UA_SUFFIX = '; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
-/**
- * 按机型档案构建客户端 UA（版本号/机型/Build 号与 query 设备参数同源，保证指纹一致）。
- * @param {{model: string, brand: string, osVersion: string, uaBuild: string}} profile - 机型档案
- * @param {string} version - 客户端版本代码（各接口各自固定，如 71332/72232/74332）
- * @param {{cronet?: boolean}} [options] - 是否附加 Cronet 网络库后缀（播放/弹幕类请求为 true）
- * @returns {string} 完整 User-Agent
- */
-function buildUa(profile, version, { cronet = false } = {}) {
-    const base = `com.phoenix.read/${version} (Linux; U; Android ${profile.osVersion}; zh_CN; ${profile.model}; Build/${profile.uaBuild}`;
-    return cronet ? base + CRONET_UA_SUFFIX : `${base})`;
-}
-// 兜底 UA（默认机型档案）：仅用于无设备上下文的路径（fallback_api 直连、非内联片源的流 UA）
-const VIDEO_UA = buildUa(DEFAULT_PROFILE, '71332', { cronet: true });
 const SEARCH_UA = buildUa(DEFAULT_PROFILE, '72232');
 /** 设备 query 参数的机型部分（覆盖 DEVICE 常量中的固定机型字段，保持与注册档案一致） */
 function deviceQuery(profile) {
@@ -77,12 +49,12 @@ const DEVICE = {
     update_version_code: '71332', host_abi: 'arm64-v8a', dragon_device_type: 'phone', pv_player: '71332',
     compliance_status: '0', need_personal_recommend: '1', player_so_load: '1', is_android_pad_screen: '0',
 };
+// 详情/分集域请求头参数（v04.10.03 播放版本号；hongguo.js 复用 legacy playbackRequest）
 const PLAYBACK_DEVICE = { ...DEVICE, version_code: '74332', version_name: '7.4.3.32',
     manifest_version_code: '74332', update_version_code: '74332', pv_player: '74332' };
-function str(value, fallback = '') { return String(value == null ? fallback : value).trim(); }
-function cleanUrl(value) { return str(value).replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&'); }
-function jsonBody(value) { try { return JSON.parse(value); } catch { return null; } }
+function md5(value) { return crypto.createHash('md5').update(value).digest('hex').toUpperCase(); }
 // 签名对 query 字节级敏感：python urllib.parse.quote 的 ['!'*'()'] 兜底编码行为须保持一致
+// （搜索/元数据/详情域专用；播放域 v5 编码在 src/server/play/v5-sign.js encodeValues）
 function pythonUrlEncode(values) {
     return Object.entries(values).map(([key, value]) => {
         const encode = (item) => encodeURIComponent(String(item == null ? '' : item))
@@ -90,7 +62,6 @@ function pythonUrlEncode(values) {
         return `${encode(key)}=${encode(value)}`;
     }).join('&');
 }
-function md5(value) { return crypto.createHash('md5').update(value).digest('hex').toUpperCase(); }
 
 function u32(value) { return Number(value) >>> 0; }
 function rol32(value, count) { const n = count & 31; const x = u32(value); return u32((x << n) | (x >>> (32 - n))); }
@@ -183,30 +154,34 @@ function helios(khronos) {
 
 function branchOf(url, body, khronos) { const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16); const q = sm3(url.split('?')[1]); const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos)); const low = iv & 15; return low - (((low * 171) >> 9) * 3); }
 /**
- * 构造播放域签名请求（真 Argus 551 + Ladon，对照 demo PR#92）。
+ * 构造详情/分集域签名请求（真 Argus 551 + Ladon，对照 demo PR#92）。
+ * 任务 64：播放取址已切换至 v5 移动端签名（src/server/play/requests.js playbackRequestV5），
+ * 本函数仅剩 hongguo.js 的详情/分集接口复用（multi_video_detail/preload 域仍走 v3 Argus）。
  * 真 Argus 签名不依赖 hash 分支，无需 branchOf 试探循环；请求头由 PlayerSigner
  * 生成（x-ss-req-ticket/x-khronos/x-ladon/x-argus/x-ss-stub），不再携带
  * x-gorgon/x-helios/x-medusa（demo 更新后播放域已全部移除旧四头）。
  * @param {string} payload - 业务 JSON 请求体（明文，函数内部 gzip）
  * @param {Object} identity - 设备身份（device_id/iid/cdid/cookie/profile）
- * @param {string} [apiBase] - 播放端点（默认主通道，可传备用通道）
+ * @param {string} apiBase - 详情/分集域端点（必填）
  * @returns {{url: string, body: Buffer, headers: Object<string,string>}} 签名后请求
  */
-function playbackRequest(payload, identity, apiBase = VIDEO_API) {
+function playbackRequest(payload, identity, apiBase) {
     // 机型档案取自注册设备身份（旧持久化身份无档案时兜底默认机型）；
     // profile 不参与 query，仅用于派生设备参数与 UA
     const profile = identity?.profile || DEFAULT_PROFILE;
-    // query 只允许设备三要素：cookie/created_at/provenGood 等非 query 字段必须剥离
-    // （签名对 query 字节级敏感，混入会导致与真实客户端 query 不一致）
-    const { profile: _omitProfile, cookie: _omitCookie, created_at: _omitCreated, provenGood: _omitProven, ...ids } = identity || {};
+    // query 只取设备三要素（对照 demo PR#92 显式解构）：设备对象上的会话/诊断字段
+    // （cookie/cookie_jar/session/created_at/provenGood 等）一律不得进 query——
+    // 任务 48 引入 CookieJar 会话后曾因 `...ids` 展开把 cookie_jar/session 序列化成
+    // "[object Object]" 混入 query，触发服务端风控全端点空响应（任务 59 根因）
+    const { device_id = '', iid = '', cdid = '' } = identity || {};
     const body = gzipSync(Buffer.from(payload));
     const khronos = Math.floor(Date.now() / 1000);
     const requestTicket = String(Date.now());
-    const query = pythonUrlEncode({ ...PLAYBACK_DEVICE, ...deviceQuery(profile), ...ids, _rticket: requestTicket });
+    const query = pythonUrlEncode({ ...PLAYBACK_DEVICE, ...deviceQuery(profile), device_id, iid, cdid, _rticket: requestTicket });
     const url = `${apiBase}?${query}`;
     const signerHeaders = PlayerSigner.headers(query, body, khronos);
     // 设备 Cookie：注册时捕获的 set-cookie（无则按 install_id 兜底）
-    const cookieHeader = ids.cookie || (ids.iid ? `store-region=cn-bj; store-region-src=did; install_id=${ids.iid}` : '');
+    const cookieHeader = identity?.cookie || (iid ? `store-region=cn-bj; store-region-src=did; install_id=${iid}` : '');
     // 登录态请求头（x-tt-token / 用户 Cookie，任务 26）
     const authHeaders = loginState.authHeaders();
     const headers = {
@@ -220,50 +195,6 @@ function playbackRequest(payload, identity, apiBase = VIDEO_API) {
     if (cookieHeader || authHeaders.Cookie) {
         headers.Cookie = [cookieHeader, authHeaders.Cookie].filter(Boolean).join('; ');
     }
-    return { url, body, headers };
-}
-
-/**
- * 构造番茄小说短剧降级请求（aid 1967，PlayerSigner 签名，对照 demo PR#92）。
- * 红果播放域主备通道与基准设备全部受阻时的终极降级通道。
- * @param {string} vid - 分集编号
- * @param {Object} identity - 设备身份（device_id/iid/cdid/cookie）
- * @returns {{url: string, body: Buffer, headers: Object<string,string>}} 签名后请求
- */
-function shortplayRequest(vid, identity, apiBase = SHORTPLAY_API) {
-    const { profile: _omitProfile, ...ids } = identity || {};
-    const khronos = Math.floor(Date.now() / 1000);
-    const query = pythonUrlEncode({
-        iid: ids.iid || '',
-        device_id: ids.device_id || '',
-        aid: '1967',
-        app_name: 'novelapp',
-        version_code: '72132',
-        version_name: '7.2.1.32',
-        device_platform: 'android',
-        device_brand: 'Xiaomi',
-        os_version: '13',
-        cdid: ids.cdid || '',
-    });
-    const url = `${apiBase}?${query}`;
-    const payload = JSON.stringify({
-        video_id: String(vid),
-        content_type: 1004,
-        biz_param: {
-            detail_page_version: 0, device_level: 3, disable_digg_stat: false, disable_video_relate_book: false,
-            from_video_id: '', need_all_video_definition: true, need_mp4_align: false, source: 4,
-            use_os_player: false, use_server_dns: false, video_platform: 3,
-        },
-    });
-    const body = Buffer.from(payload);
-    const signerHeaders = PlayerSigner.headers(query, body, khronos);
-    const headers = {
-        'User-Agent': 'com.dragon.read',
-        'Content-Type': 'application/json; charset=utf-8',
-        ...signerHeaders,
-    };
-    const cookieHeader = ids.cookie || (ids.iid ? `store-region=cn-bj; store-region-src=did; install_id=${ids.iid}` : '');
-    if (cookieHeader) headers.Cookie = cookieHeader;
     return { url, body, headers };
 }
 
@@ -418,58 +349,8 @@ function signedPassportRequest(apiPath, params, identity, form = false) {
     return { method: form ? 'POST' : 'GET', url, headers, body };
 }
 
-function parseFallback(value) {
-    if (typeof value === 'string') { const parsed = jsonBody(value); return parsed?.fallback_api || value; }
-    if (Array.isArray(value)) return str(value[0]);
-    return str(value?.fallback_api);
-}
-function deriveContentKey(value) {
-    const raw = Buffer.from(str(value).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
-    if (raw.length < 3) throw new Error('spade_a too short');
-    let v8 = raw.length - (raw[0] ^ raw[1] ^ raw[2]) + 47;
-    v8 = Math.min(v8, raw.length - 1);
-    if (v8 < 33) throw new Error('spade_a key length invalid');
-    const work = Buffer.from(raw.subarray(1, 1 + v8)); let a = 85; let b = 246;
-    for (let i = 0; i < v8; i += 1) {
-        const old = work[i]; const previous = i & 1 ? a : b;
-        if (i & 1) a = old; else b = old;
-        const pop = i.toString(2).split('1').length - 1;
-        work[i] = (-21 - pop + (previous ^ old)) & 255;
-    }
-    const hex = work.subarray(1, 33).toString('ascii');
-    if (!/^[0-9a-f]{32}$/i.test(hex)) throw new Error('App 视频密钥格式无效');
-    return Buffer.from(hex, 'hex');
-}
-
-function decryptSpadeUrl(value, seed) {
-    const encoded = str(value); if (!encoded) return '';
-    const raw = Buffer.from(encoded, 'base64');
-    if (raw.length < 5) throw new Error('spade URL ciphertext too short');
-    if (raw[0] !== 0xa8 || raw[2] !== 0x01 || raw[3] !== 0x00) throw new Error('spade URL header format error');
-    const cipherLength = Math.floor((raw.length - 4) / 16) * 16;
-    if (!cipherLength) throw new Error('spade URL ciphertext has no complete block');
-    const constants = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
-    const h1 = crypto.createHash('sha512').update(seed).digest(); const h2 = crypto.createHash('sha512').update(Buffer.concat([h1, constants])).digest();
-    const decipher = crypto.createDecipheriv('aes-128-cbc', h2.subarray(0, 16), h2.subarray(16, 32));
-    decipher.setAutoPadding(false);
-    let plaintext = Buffer.concat([decipher.update(raw.subarray(4, 4 + cipherLength)), decipher.final()]);
-    if (plaintext.length) {
-        const padding = plaintext[plaintext.length - 1];
-        if (padding >= 1 && padding <= 16 && padding <= plaintext.length) plaintext = plaintext.subarray(0, plaintext.length - padding);
-    }
-    while (plaintext.length && plaintext[plaintext.length - 1] === 0) plaintext = plaintext.subarray(0, plaintext.length - 1);
-    return plaintext.toString('utf8');
-}
-
-function checkedUrl(value, domains) {
-    let url;
-    try { url = new URL(value); } catch (_) { throw Object.assign(new Error('App 片源地址格式无效'), { code: 'INVALID_RESPONSE' }); }
-    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') ||
-        !domains.some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) {
-        throw Object.assign(new Error('App 片源返回了不受支持的服务地址'), { code: 'SECURITY_BLOCKED' });
-    }
-    return url.href;
-}
+// 片源解析工具（parseFallback/deriveContentKey/decryptSpadeUrl/checkedUrl）
+// 已随任务 64 迁至 src/server/play/entry.js 与 util.js
 
 async function requestJson(url, options, deadline, signal) {
     const axios = require('axios');
@@ -573,497 +454,6 @@ async function requestJson(url, options, deadline, signal) {
     throw Object.assign(new Error('App 片源跳转次数过多'), { code: 'SECURITY_BLOCKED' });
 }
 
-const entryCache = new Map();
-// demo 新增：设备偏好路由（该设备上次成功的通道类型+端点，下次直接首选）与取址并发去重
-const preferredRouteByDevice = new Map();
-const inFlightEntryRequests = new Map();
-const SHORTPLAY_PREF_TTL_MS = 300000;
-/** 新注册设备跨集群同步窗口：注册后 15s 内全空响应视为"同步未完成"，等待 1.5s 重试一轮 */
-const FRESH_DEVICE_SYNC_WINDOW_MS = 15000;
-const FRESH_DEVICE_RETRY_DELAY_MS = 1500;
-
-/**
- * 清空取址缓存与在途请求。
- * @param {string} [vid] - 分集编号；省略时全量清空（同时重置设备偏好路由）
- * @returns {void}
- */
-function clearEntryCache(vid) {
-    if (vid) {
-        const key = String(vid);
-        entryCache.delete(key);
-        inFlightEntryRequests.delete(key);
-    } else {
-        entryCache.clear();
-        preferredRouteByDevice.clear();
-        inFlightEntryRequests.clear();
-    }
-}
-
-const H264_CODECS = ['h264', 'avc', 'avc1'];
-const HEVC_CODECS = ['hevc', 'h265', 'hvc1', 'hev1', 'bytevc1'];
-const BYTEVC2_CODECS = ['bytevc2', 'bvc2'];
-
-/**
- * 判断编解码标识是否属于 HEVC (H.265) 家族。
- * @param {string} codec - 原始 codec_type 标识
- * @returns {boolean} HEVC 家族返回 true
- */
-function isHevcCodec(codec) {
-    return HEVC_CODECS.includes(str(codec).toLowerCase());
-}
-
-function sleepWithSignal(ms, signal) {
-    if (signal?.aborted) return Promise.reject(signal.reason);
-    return new Promise((resolve, reject) => {
-        const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
-        const timer = setTimeout(() => {
-            signal?.removeEventListener('abort', onAbort);
-            resolve();
-        }, ms);
-        signal?.addEventListener('abort', onAbort, { once: true });
-    });
-}
-
-function getPreferredRoute(devKey) {
-    if (!devKey) return null;
-    const pref = preferredRouteByDevice.get(devKey);
-    if (!pref) return null;
-    if (pref.expires && pref.expires <= Date.now()) {
-        preferredRouteByDevice.delete(devKey);
-        return null;
-    }
-    return pref;
-}
-
-function setPreferredRoute(devKey, kind, apiBase) {
-    if (!devKey || !apiBase) return;
-    preferredRouteByDevice.delete(devKey);
-    preferredRouteByDevice.set(devKey, kind === 'shortplay'
-        ? { kind, apiBase, expires: Date.now() + SHORTPLAY_PREF_TTL_MS }
-        : { kind, apiBase });
-    while (preferredRouteByDevice.size > 32) {
-        preferredRouteByDevice.delete(preferredRouteByDevice.keys().next().value);
-    }
-}
-
-/**
- * 构建设备的播放通道尝试序列：偏好路由（上次成功通道）置顶，其余按
- * 5 播放通道 + 3 短剧通道的固定阶梯排列。
- * @param {string} devKey - 设备键（device_id）
- * @returns {{kind: 'multi'|'shortplay', apiBase: string}[]} 有序尝试步骤
- */
-function buildPlaybackSteps(devKey) {
-    const pref = getPreferredRoute(devKey);
-    if (pref?.kind === 'shortplay') {
-        const restShortplay = SHORTPLAY_APIS.filter(api => api !== pref.apiBase).map(apiBase => ({ kind: 'shortplay', apiBase }));
-        const multiSteps = VIDEO_APIS.map(apiBase => ({ kind: 'multi', apiBase }));
-        return [{ kind: 'shortplay', apiBase: pref.apiBase }, ...multiSteps, ...restShortplay];
-    }
-    const orderedMulti = pref?.kind === 'multi' && VIDEO_APIS.includes(pref.apiBase)
-        ? [pref.apiBase, ...VIDEO_APIS.filter(api => api !== pref.apiBase)]
-        : VIDEO_APIS;
-    return [
-        ...orderedMulti.map(apiBase => ({ kind: 'multi', apiBase })),
-        ...SHORTPLAY_APIS.map(apiBase => ({ kind: 'shortplay', apiBase })),
-    ];
-}
-
-/** 响应批量写入取址缓存（3 分钟 TTL，容量 64，与 demo cacheResponseEntries 一致） */
-function cacheResponseEntries(response) {
-    if (response?.data && typeof response.data === 'object') {
-        const now = Date.now();
-        for (const [id, entry] of Object.entries(response.data)) {
-            if (entry && (entry.video_model || entry.fallback_api)) {
-                entryCache.set(id, { entry, expires: now + 180000 });
-            }
-        }
-        while (entryCache.size > 64) {
-            entryCache.delete(entryCache.keys().next().value);
-        }
-    }
-}
-
-/**
- * 统一降级循环（demo 重构）：按步骤序列依次尝试播放/短剧通道。
- * - 播放通道业务拒绝（BUSINESS_REJECTED）直接上抛终止阶梯；
- * - 播放通道网络类错误跳过剩余播放通道（短剧通道仍尝试）；
- * - 空响应继续下一通道；全部通道均空响应时 allEmpty=true（供设备换新重试）。
- */
-async function runPlaybackSteps(steps, vid, payload, device, execRequestJson, deadline, signal) {
-    const devKey = deviceKey(device);
-    let lastError = null;
-    let allEmpty = true;
-    let skipRemainingMulti = false;
-    let loggedMultiRetry = false;
-    let loggedShortplay = false;
-
-    for (let i = 0; i < steps.length; i++) {
-        const step = steps[i];
-        if (step.kind === 'multi' && skipRemainingMulti) continue;
-        signal.throwIfAborted();
-        if (deadline - Date.now() <= 0) break;
-
-        try {
-            if (step.kind === 'multi') {
-                const signed = playbackRequest(payload, device, step.apiBase);
-                const resp = await execRequestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
-                if (Number(resp?.Code || resp?.code || 0) !== 0) {
-                    throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
-                }
-                cacheResponseEntries(resp);
-                const hasEntry = Boolean(resp?.data?.[vid] || entryCache.get(vid)?.entry);
-                if (hasEntry) setPreferredRoute(devKey, 'multi', step.apiBase);
-                return { response: resp, allEmpty: false };
-            }
-
-            const shortSigned = shortplayRequest(vid, device, step.apiBase);
-            const shortResp = await execRequestJson(shortSigned.url, { method: 'POST', headers: shortSigned.headers, data: shortSigned.body }, deadline, signal);
-            const entry = shortResp?.data?.[vid] || (shortResp?.data?.video_model ? shortResp.data : null);
-            if (entry) {
-                const resp = { code: 0, data: { [vid]: entry } };
-                cacheResponseEntries(resp);
-                setPreferredRoute(devKey, 'shortplay', step.apiBase);
-                return { response: resp, allEmpty: false };
-            }
-            allEmpty = false;
-        } catch (err) {
-            signal.throwIfAborted();
-            if (err.code === 'BUSINESS_REJECTED') throw err;
-            lastError = err;
-            if (err.code !== 'EMPTY_RESPONSE') {
-                allEmpty = false;
-                if (step.kind === 'multi') skipRemainingMulti = true;
-            }
-            const nextStep = steps.slice(i + 1).find(candidate => !(candidate.kind === 'multi' && skipRemainingMulti));
-            if (nextStep?.kind === 'multi' && err.code === 'EMPTY_RESPONSE' && !loggedMultiRetry) {
-                loggedMultiRetry = true;
-                logger.warn('AppSource', '播放接口返回空响应，尝试备用接口重试...');
-            } else if (nextStep?.kind === 'shortplay' && !loggedShortplay) {
-                loggedShortplay = true;
-                logger.warn('AppSource', '红果接口受阻，降级至番茄小说短剧备用通道...');
-            }
-        }
-    }
-    return { response: null, lastError, allEmpty };
-}
-
-/** 等待在途取址任务完成（跟随调用方 signal 中止；最后一个等待者被中止时取消任务本身） */
-function waitForInFlightEntry(job, signal) {
-    if (!signal) return job.promise;
-    if (signal.aborted) return Promise.reject(signal.reason);
-    const waiter = Symbol();
-    job.waiters.add(waiter);
-    return new Promise((resolve, reject) => {
-        const cleanup = () => {
-            signal.removeEventListener('abort', onAbort);
-            job.waiters.delete(waiter);
-        };
-        const onAbort = () => {
-            cleanup();
-            if (!job.waiters.size) job.controller.abort(signal.reason);
-            reject(signal.reason);
-        };
-        signal.addEventListener('abort', onAbort, { once: true });
-        job.promise.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
-    });
-}
-
-/**
- * 上游取址（含在途去重与本地自研终局恢复阶梯）：
- * 同 vid 的并发取址共享同一次上游请求（调用方中止传播由 waitForInFlightEntry 处理）；
- * 强制刷新（refresh=true）清缓存与在途任务后重建。
- * 任务内部阶梯（本机自研，叠加于 demo 多端点阶梯之上）：
- * ① 当前设备全阶梯 → ② 新注册设备同步窗口重试（demo）→ ③ 非基准设备切基准重试（任务 53）
- * → ④ 注册全新匿名设备重试（任务 53 实测可恢复）。
- */
-async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
-    if (refresh) {
-        entryCache.delete(vid);
-        inFlightEntryRequests.delete(vid);
-    } else if (inFlightEntryRequests.has(vid)) {
-        return await waitForInFlightEntry(inFlightEntryRequests.get(vid), callerSignal);
-    }
-
-    const controller = new AbortController();
-    const timeoutSignal = AbortSignal.timeout(12000);
-    const internalSignal = AbortSignal.any([timeoutSignal, controller.signal]);
-    const deadline = Date.now() + 12000;
-
-    const job = { controller, waiters: new Set(), promise: null };
-    job.promise = (async () => {
-        const payload = JSON.stringify({
-            dr_scene: 'player',
-            biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
-            mixed_video_id_map: { '1004': batch },
-        });
-        const playbackId = crypto.randomUUID();
-        const execRequestJson = (url, requestOptions, ...args) => (module.exports.requestJson || requestJson)(url,
-            { ...requestOptions, diagnostics: { playback_id: playbackId, vid } }, ...args);
-        const device = await getPlaybackDevice(execRequestJson, internalSignal);
-        // 新注册的匿名设备异步预热（本机自研；登录态/基准设备/已验证设备无需预热）
-        if (!loginState.hasToken() && !deviceProvenGood && !getPlaybackDevice.currentProvenGood?.()
-            && device?.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
-            void runWarmup(device);
-        }
-
-        // 单设备的全阶梯尝试；新注册设备（15s 内）全空响应时按 demo 同步窗口逻辑等待 1.5s 重试
-        const runDeviceSteps = async (dev) => {
-            const steps = buildPlaybackSteps(deviceKey(dev));
-            let result = await runPlaybackSteps(steps, vid, payload, dev, execRequestJson, deadline, internalSignal);
-            if (!result.response && result.allEmpty && dev?.created_at
-                && (Date.now() - dev.created_at < FRESH_DEVICE_SYNC_WINDOW_MS)
-                && (deadline - Date.now() > FRESH_DEVICE_RETRY_DELAY_MS + 1000)) {
-                logger.info('AppSource', `新设备刚完成注册可能仍在跨集群同步中，等待 ${FRESH_DEVICE_RETRY_DELAY_MS}ms 后重试播放通道...`);
-                await sleepWithSignal(FRESH_DEVICE_RETRY_DELAY_MS, internalSignal);
-                result = await runPlaybackSteps(steps, vid, payload, dev, execRequestJson, deadline, internalSignal);
-            }
-            return result;
-        };
-
-        // 空响应诊断字段（本机自研）：bytes/logid/设备后四位/机型，一行日志定位拒绝层
-        const diag = (err) => [err.bytes != null ? `bytes=${err.bytes}` : '', err.logid ? `logid=${err.logid}` : '',
-            `iid=…${String(device.iid).slice(-4)}`, device.profile?.model ? `model=${device.profile.model}` : ''].filter(Boolean).join(', ');
-
-        let result = await runDeviceSteps(device);
-        if (!result.response && result.allEmpty && typeof getPlaybackDevice.fallbackToDefault === 'function'
-            && DEFAULT_VERIFIED_DEVICE && device?.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
-            // 任务 53：全部通道均空响应且当前设备非基准设备 → 切内置基准设备重试（不消耗注册配额）
-            logger.warn('AppSource', `播放通道全部空响应，自动切换至基准设备重试... [${diag(result.lastError || {})}]`);
-            result = await runDeviceSteps(getPlaybackDevice.fallbackToDefault());
-        }
-        if (!result.response && result.allEmpty) {
-            // 任务 53：终局恢复——注册全新匿名设备再跑一轮全阶梯（实测可立即恢复播放）
-            let fresh = null;
-            try {
-                fresh = await getPlaybackDevice.rotateDevice(execRequestJson, internalSignal);
-                logger.warn('AppSource', `播放通道全部空响应，已注册全新匿名设备重试: device_id=…${String(fresh.device_id).slice(-6)}, model=${fresh.profile?.model ?? '-'}`);
-            } catch { /* 注册失败（网络/冷却）不阻塞错误上抛 */ }
-            if (fresh) result = await runDeviceSteps(fresh);
-        }
-        if (!result.response) {
-            throw result.lastError || Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: 'MISSING_MODEL' });
-        }
-        // 取址成功：当前设备验证可用（此后空响应按 IP 风控窗口处理，不再换设备）；
-        // 同时持久化健康度时间戳，下次进程重启复用设备时同样受护栏保护（本机自研）
-        deviceProvenGood = true;
-        getPlaybackDevice.markDeviceGood?.();
-        const currentEntry = result.response.data?.[vid] || entryCache.get(vid)?.entry;
-        if (!currentEntry) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: 'MISSING_MODEL' });
-        return currentEntry;
-    })().finally(() => {
-        if (inFlightEntryRequests.get(vid) === job) inFlightEntryRequests.delete(vid);
-    });
-
-    inFlightEntryRequests.set(vid, job);
-    return await waitForInFlightEntry(job, callerSignal);
-}
-
-async function parseEntryPlayInfo(vid, entry, requestedQuality, allowLowerQuality, deadline, signal, allowBytevc2 = false, allowHevc = true, allowHevcTranscode = false, profile = DEFAULT_PROFILE) {
-    const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
-    if (!model) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
-    const inline = Array.isArray(model.video_list) && model.video_list.length > 0;
-    let info = model;
-    if (!inline) {
-        const fallback = parseFallback(model.fallback_api);
-        if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-        const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
-        if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
-            throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
-        }
-        info = outer?.video_info?.data;
-    }
-    if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
-    const candidates = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
-        const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
-        // demo 新增 HEVC 感知分级：客户端支持 HEVC 时保持原序（H264→HEVC→ByteVC2）；
-        // 不支持时优先 H264 直解，其次 ByteVC2（ffmpeg 转码），最后 HEVC（ffmpeg 转码）
-        let codecRank = 3;
-        if (H264_CODECS.includes(codec)) {
-            codecRank = 0;
-        } else if (allowHevc) {
-            if (HEVC_CODECS.includes(codec)) codecRank = 1;
-            else if (allowBytevc2 && BYTEVC2_CODECS.includes(codec)) codecRank = 2;
-        } else {
-            if (allowBytevc2 && BYTEVC2_CODECS.includes(codec)) codecRank = 1;
-            else if (allowBytevc2 && allowHevcTranscode && HEVC_CODECS.includes(codec)) codecRank = 2;
-        }
-        const quality = str(item.quality_desc || item.definition || item.video_meta?.definition || item.height || item.vheight);
-        const meta = item.video_meta || {};
-        const [width, height] = [[item.vwidth, item.vheight], [item.width, item.height], [meta.vwidth, meta.vheight], [meta.width, meta.height]]
-            .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
-        const pixels = width && height ? Math.min(width, height) : Number(quality.match(/\d+/)?.[0] || 0);
-        return { item, codec, codecRank, quality, pixels, width, height };
-    });
-    // demo 新增：可接受档位随 HEVC 能力收缩（有直解档不收进转码档）
-    const maxAcceptedRank = allowHevc
-        ? (candidates.some(row => row.codecRank < 2) ? 2 : 3)
-        : (candidates.some(row => row.codecRank === 0) ? 1 : candidates.some(row => row.codecRank === 1) ? 2 : 3);
-    const rows = candidates.filter(row => row.codecRank < maxAcceptedRank
-        && (allowLowerQuality || meetsDownloadQuality(row, requestedQuality))).sort((a, b) => {
-        if (requestedQuality === 'auto') return b.pixels - a.pixels || a.codecRank - b.codecRank;
-        const aMeets = meetsDownloadQuality(a, requestedQuality), bMeets = meetsDownloadQuality(b, requestedQuality);
-        if (aMeets !== bMeets) return Number(bMeets) - Number(aMeets);
-        const aPixels = Math.min(a.width, a.height), bPixels = Math.min(b.width, b.height);
-        return (aMeets ? aPixels - bPixels : bPixels - aPixels) || a.codecRank - b.codecRank;
-    });
-    if (!allowBytevc2 && !rows.length && candidates.some(row => BYTEVC2_CODECS.includes(row.codec))
-        && !candidates.some(row => row.codecRank < 2)) {
-        throw Object.assign(new Error('本集使用 ByteVC2 编码，当前播放器暂不支持'), { code: 'UNSUPPORTED_BYTEVC2' });
-    }
-    if (!allowHevc && !rows.length && candidates.some(row => HEVC_CODECS.includes(row.codec))
-        && !candidates.some(row => H264_CODECS.includes(row.codec))) {
-        throw Object.assign(new Error('当前设备不支持 HEVC (H.265) 硬件解码，且本集暂无兼容片源'), { code: 'UNSUPPORTED_HEVC' });
-    }
-    if (!rows.length) throw new Error(requestedQuality === 'auto' || allowLowerQuality
-        ? '本集暂未提供兼容的 H.264/HEVC 片源'
-        : `本集暂无尺寸可确认且满足 ${requestedQuality} 的 H.264/HEVC 片源，未降级`);
-    let lastError;
-    const variants = [];
-    const seen = new Set();
-    // Auto means "best available". Keep every compatible encoding at the same
-    // resolution tier, but never silently fall through to a lower rendition.
-    const bestPixels = rows[0].pixels;
-    const selectedRows = requestedQuality === 'auto'
-        ? (bestPixels > 0 ? rows.filter(row => row.pixels === bestPixels) : rows.slice(0, 1))
-        : rows;
-    for (const selected of selectedRows) {
-        try {
-            const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
-            if (inline && !spade && selected.item.encrypt_info != null
-                && ![false, 0, '0', 'false'].includes(selected.item.encrypt_info?.encrypt)) {
-                throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
-            }
-            const key = spade ? deriveContentKey(spade) : null;
-            for (const candidate of [selected.item.main_url, selected.item.backup_url, ...(Array.isArray(selected.item.backup_url_list) ? selected.item.backup_url_list : [])]) {
-                if (typeof candidate !== 'string' || !candidate) continue;
-                try {
-                    const media = info.key_seed
-                        ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
-                        : cleanUrl(candidate);
-                    const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
-                    const contentKey = key ? key.toString('hex') : null;
-                    const identity = `${url}:${contentKey || ''}`;
-                    if (seen.has(identity)) continue;
-                    seen.add(identity);
-                    variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec === 'bvc2' ? 'bytevc2' : selected.codec, source: 'app', vid,
-                        userAgent: inline ? buildUa(profile, '74332', { cronet: true }) : VIDEO_UA, quality: allowLowerQuality ? (selected.width && selected.height ? `${Math.min(selected.width, selected.height)}p` : '') : requestedQuality === 'auto' ? selected.quality : requestedQuality,
-                        ...(requestedQuality === 'auto' ? {} : { width: selected.width, height: selected.height }) });
-                } catch (error) { lastError = error; }
-            }
-        } catch (error) { lastError = error; }
-    }
-    if (variants.length) return { ...variants[0], variants, duration: Number(model.video_duration || info.video_duration) || 0 };
-    throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
-        : Object.assign(new Error('本集片源地址或密钥无法解析'), { code: 'INVALID_RESPONSE' });
-}
-
-/** 取址失败熔断：滑动窗口时长（仅统计 EMPTY_RESPONSE / BUSINESS_REJECTED 两类"服务端拒绝"失败） */
-const FAILURE_WINDOW_MS = 60 * 1000;
-/** 窗口内允许的失败次数上限（达到即熔断） */
-const FAILURE_BUDGET = 5;
-/** 熔断持续时间（期间直接快速失败，不再请求取址/设备接口，防风控窗口期高频重试放大风险） */
-const CIRCUIT_OPEN_MS = 45 * 1000;
-/** 滑动窗口内的取址失败时间戳 */
-let playFailureTimestamps = [];
-/** 熔断开启时刻（0 = 未熔断） */
-let playCircuitOpenedAt = 0;
-
-/** 记录一次取址失败；60s 窗口内累计 ≥5 次则开启熔断 */
-function recordPlayFailure() {
-    const now = Date.now();
-    playFailureTimestamps = playFailureTimestamps.filter(t => now - t < FAILURE_WINDOW_MS);
-    playFailureTimestamps.push(now);
-    if (playFailureTimestamps.length >= FAILURE_BUDGET) playCircuitOpenedAt = now;
-}
-
-/** 熔断检查：开启期内抛 RATE_LIMITED 快速失败；冷却结束后清零预算重新计数 */
-function assertCircuitClosed() {
-    const now = Date.now();
-    if (playCircuitOpenedAt && now - playCircuitOpenedAt < CIRCUIT_OPEN_MS) {
-        const wait = Math.ceil((CIRCUIT_OPEN_MS - (now - playCircuitOpenedAt)) / 1000);
-        throw Object.assign(new Error(`取址失败过于频繁，请 ${wait}s 后重试`), { code: 'RATE_LIMITED' });
-    }
-    if (playCircuitOpenedAt) {
-        playCircuitOpenedAt = 0;
-        playFailureTimestamps = [];
-    }
-}
-
-/** 当前设备是否已成功取到过播放地址（设备健康度）。
- *  空响应多数是服务端对当前设备身份的静默拒绝（内置基准设备为公开共享身份，易被标记）；
- *  降级链终局会注册全新匿名设备重试（实测可恢复，见 fetchAppPlayUrlInner）。
- *  设备一旦验证可用，同进程内的空响应仍优先按风控窗口处理——同设备重试收敛，
- *  避免每次失败都消耗注册配额；熔断器与用户手动「重置设备」兜底。 */
-let deviceProvenGood = false;
-
-/**
- * App 端取址入口（含失败熔断 + 并发去重）：
- * - 每次调用先做熔断检查（60s 内 ≥5 次服务端拒绝失败 → 45s 内快速失败）；
- * - 仅统计 EMPTY_RESPONSE / BUSINESS_REJECTED（服务端拒绝类），网络/超时类不计入，
- *   避免弱网环境被误熔断；
- * - 同分集并发调用共享同一次取址（StrictMode 双挂载/双击重试会让签名请求翻倍，
- *   放大风控风险），refresh=true 的强制刷新不参与共享。
- */
-const playInflight = new Map(); // vid -> Promise（同 vid 并发共享）
-
-async function fetchAppPlayUrl(vid, options = {}) {
-    assertCircuitClosed();
-    const key = String(vid || '');
-    if (!options.refresh && playInflight.has(key)) return playInflight.get(key);
-    const p = (async () => {
-        try {
-            return await fetchAppPlayUrlInner(vid, options);
-        } catch (error) {
-            if (error.code === 'EMPTY_RESPONSE' || error.code === 'BUSINESS_REJECTED') recordPlayFailure();
-            throw error;
-        }
-    })().finally(() => playInflight.delete(key));
-    if (!options.refresh) playInflight.set(key, p);
-    return p;
-}
-
-async function fetchAppPlayUrlInner(vid, options = {}) {
-    const requestedQuality = normalizeDownloadQuality(options.quality);
-    const allowLowerQuality = options.allowLowerQuality === true && requestedQuality !== 'auto';
-    vid = String(vid || '');
-    if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
-    const deadline = Date.now() + 12000;
-    const timeoutSignal = AbortSignal.timeout(12000);
-    const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
-    // 当前设备机型档案（同步读取内存/持久化身份，不触发注册请求），用于流 UA 与设备参数一致
-    const profile = getPlaybackDevice.currentProfile?.() || DEFAULT_PROFILE;
-    // demo 新增：HEVC 能力透传（渲染层硬解探测结果；allowHevcTranscode 表示可用 ffmpeg 兜底转码）
-    const allowHevc = options.allowHevc !== false;
-    const allowHevcTranscode = options.allowHevcTranscode === true;
-
-    if (!options.refresh && entryCache.has(vid)) {
-        const cached = entryCache.get(vid);
-        if (cached?.expires > Date.now()) {
-            try {
-                return await parseEntryPlayInfo(vid, cached.entry, requestedQuality, allowLowerQuality, deadline, signal, options.allowBytevc2 === true, allowHevc, allowHevcTranscode, profile);
-            } catch (error) {
-                if (error.code === 'UNSUPPORTED_BYTEVC2' || error.code === 'UNSUPPORTED_HEVC') throw error;
-                entryCache.delete(vid);
-            }
-        } else {
-            entryCache.delete(vid);
-        }
-    }
-
-    const batch = [vid];
-    const extra = Array.isArray(options.nextVids) ? options.nextVids : options.nextVid ? [options.nextVid] : [];
-    for (const next of extra) {
-        const nVid = String(next || '');
-        if (/^\d{1,30}$/.test(nVid) && !batch.includes(nVid)) {
-            batch.push(nVid);
-            if (batch.length >= 4) break;
-        }
-    }
-
-    const currentEntry = await resolveUpstreamEntry(vid, batch, options.refresh === true, signal);
-    return await parseEntryPlayInfo(vid, currentEntry, requestedQuality, allowLowerQuality, deadline, signal, options.allowBytevc2 === true, allowHevc, allowHevcTranscode, getPlaybackDevice.currentProfile?.() || DEFAULT_PROFILE);
-}
-
 // ===== 行为预热（对照风控分析文档 §L4 与 hongguo-desktop warmup 思路）=====
 // 新注册设备若只有"注册"这一条行为，服务端会判定为采集器特征（匿名深集只发第 1 集）。
 // 注册成功后按官方冷启动顺序重放少量自然请求，全部使用注册设备身份实时签名。
@@ -1091,4 +481,14 @@ async function runWarmup(device) {
 }
 getPlaybackDevice.setRegistrationHook?.((device) => { void runWarmup(device); });
 
-module.exports = { fetchAppPlayUrl, clearEntryCache, isHevcCodec, signedSearchRequest, signedMetadataRequest, signedPassportRequest, parseSearchInteger, requestJson, playbackRequest, shortplayRequest, SEARCH_API, SEARCH_UA, ORIGINS, PASSPORT_HOST };
+// 播放取址由 src/server/play 门面提供（v5 移动端签名，PR#106）；此处按原名转发，
+// streamService/hongguo/danmaku 等既有调用方零改动
+module.exports = {
+    fetchAppPlayUrl: play.fetchAppPlayUrl,
+    clearEntryCache: play.clearEntryCache,
+    isHevcCodec: play.isHevcCodec,
+    shortplayRequest: play.shortplayRequest,
+    signedSearchRequest, signedMetadataRequest, signedPassportRequest, parseSearchInteger,
+    requestJson, playbackRequest, runWarmup,
+    SEARCH_API, SEARCH_UA, ORIGINS, PASSPORT_HOST,
+};
