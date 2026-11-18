@@ -27,7 +27,11 @@ asar: true
 
 # 依赖已全部内联进 out/（无原生模块），跳过 @electron/rebuild 与 node_modules 收集
 npmRebuild: false
-publish: null
+# GitHub Releases 发布源：electron-updater 读取 latest.yml 检查更新（任务 66）
+publish:
+  provider: github
+  owner: legend0
+  repo: hongguo-desktop
 
 win:
   icon: resources/icon.png

@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import { useSettings } from '../stores';
 import { api } from '../api';
 import { toast } from '../components/Toast';
+import { useUpdaterState } from '../updater';
 import {
   DM_PREFS_DEFAULT,
   DM_ROW_OPTIONS,
@@ -37,6 +38,7 @@ const UPSTREAM_URL = 'https://github.com/zfdang/hongguo-open-player';
  */
 export function SettingsPage() {
   const settings = useSettings();
+  const updateState = useUpdaterState();
   const [openAtLogin, setOpenAtLogin] = useState(false);
   const [active, setActive] = useState<SectionKey>('player');
   const [dmPrefs, setDmPrefs] = useState<DanmakuPrefs>(() => readDanmakuPrefs());
@@ -55,6 +57,47 @@ export function SettingsPage() {
     void api.getAuthState().then(setAuthState);
     void api.app.getVersion().then(setAppVersion).catch(() => setAppVersion('0.1.0'));
   }, []);
+
+  // ===== 检查更新（任务 66） =====
+  const [checking, setChecking] = useState(false);
+
+  /** 手动检查：不自动取消（主进程状态机必然以 available/downloaded/idle/error 收尾） */
+  const checkNow = () => {
+    if (checking) return;
+    setChecking(true);
+    void api.updater.check();
+  };
+  // 检查进入收尾阶段（离开 checking）即恢复按钮；同时给个轻提示
+  useEffect(() => {
+    if (updateState.phase === 'checking') return;
+    setChecking(false);
+    if (updateState.phase === 'idle') toast('当前已是最新版本');
+  }, [updateState.phase]);
+
+  /** 「检查更新」行的状态说明（与主进程状态机逐段对应，任务 66-B） */
+  const upStatusText = (() => {
+    const s = updateState;
+    if (!s.supported) return '便携版 / 开发模式不支持自动更新';
+    switch (s.phase) {
+      case 'checking': return '正在检查更新…';
+      case 'available': return `发现新版本 v${s.version}（当前 v${appVersion}），点击「立即升级」开始下载`;
+      case 'downloading': return `新版本 v${s.version || '?'} 下载中 ${s.progress}%${
+        s.bps > 0 ? `（${(s.bps / 1048576).toFixed(1)} MB/s）` : ''}`;
+      case 'downloaded': return `v${s.version} 下载完成，正在重启安装…`;
+      case 'error': return `上次检查失败：${s.error || '未知原因'}`;
+      case 'idle': return settings.autoUpdate !== false
+        ? `当前已是最新版本（v${appVersion}）；启动时与每 6 小时自动检查一次，发现更新会询问是否升级`
+        : `当前版本 v${appVersion}；自动更新已关闭，可点击「检查更新」手动检查`;
+      default: return '';
+    }
+  })();
+
+  /** 「立即升级」：触发主进程下载，全局更新弹窗随之切换为下载进度（任务 66-B） */
+  const startUpgrade = () => {
+    void api.updater.download().then((ok) => {
+      if (!ok) toast('当前状态无法开始下载，请重新检查更新');
+    });
+  };
 
   /** 保存粘贴的 x-tt-token（主进程校验归一化，失败给 toast） */
   const saveToken = () => {
@@ -259,6 +302,22 @@ export function SettingsPage() {
                   toast(ok ? (v ? '已开启开机自启' : '已关闭开机自启') : '设置失败');
                 });
               })}
+              {/* 自动更新（任务 66）：仅安装版可用；便携版无固定安装目录不支持就地升级 */}
+              {updateState.supported ? (
+                switchRow(
+                  '自动更新',
+                  '启动时与每 6 小时自动检查新版本，发现更新后询问是否下载安装；关闭后仍可在「关于」手动检查',
+                  settings.autoUpdate !== false,
+                  (v) => settings.update({ autoUpdate: v }),
+                )
+              ) : (
+                <div className="setting-row">
+                  <div>
+                    自动更新
+                    <div className="hint">便携版 / 开发模式不支持自动更新，请前往 GitHub Releases 下载新版本</div>
+                  </div>
+                </div>
+              )}
               {/* 登录态（x-tt-token）：匿名观看有约 9 集配额上限，登录态是可播性分水岭。
                   优先验证码自动登录，手动粘贴抓包 token 作为兜底。
                   任务 28：验证码自动登录换登录态已在协议层证死（aid=8662 拦截），登录态注入
@@ -351,6 +410,28 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>应用</div>
                 <div style={{ color: 'var(--text-tertiary)' }}>红果短剧桌面版 v{appVersion}</div>
+              </div>
+              {/* 检查更新（任务 66-B）：手动入口 + 版本对比 + 实时状态（发现新版本显示版本号，
+                  「立即升级」与全局更新弹窗共用同一状态机与下载流程） */}
+              <div className="setting-row">
+                <div>
+                  检查更新
+                  <div className="hint" style={{ lineHeight: 1.7 }}>{upStatusText}</div>
+                  {updateState.phase === 'downloading' ? (
+                    <div className="up-progress">
+                      <div className="up-progress-fill" style={{ width: `${Math.max(2, updateState.progress)}%` }} />
+                    </div>
+                  ) : null}
+                </div>
+                {updateState.phase === 'available' ? (
+                  <button className="chip on" onClick={startUpgrade}>
+                    立即升级
+                  </button>
+                ) : (
+                  <button className="chip" disabled={checking || !updateState.supported} onClick={checkNow}>
+                    {checking ? '检查中…' : '检查更新'}
+                  </button>
+                )}
               </div>
               <div className="setting-row">
                 <div>定位</div>

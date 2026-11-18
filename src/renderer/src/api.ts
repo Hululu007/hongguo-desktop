@@ -40,6 +40,30 @@ export interface DanmakuResult {
   error?: string;
 }
 
+/** 更新状态机阶段（与主进程 src/main/updater.ts 保持一致） */
+export type UpdaterPhase =
+  | 'idle' | 'checking' | 'available' | 'downloading'
+  | 'downloaded' | 'error' | 'unsupported';
+
+/** 主进程广播的更新状态快照 */
+export interface UpdaterState {
+  phase: UpdaterPhase;
+  /** 下载进度百分比（0-100，仅 downloading 阶段有效） */
+  progress: number;
+  /** 下载速度（字节/秒，仅 downloading 阶段有效） */
+  bps: number;
+  /** 已下载字节数（仅 downloading 阶段有效） */
+  transferred: number;
+  /** 安装包总字节数（仅 downloading 阶段有效） */
+  total: number;
+  /** 新版本号（available/downloading/downloaded 阶段有效） */
+  version: string;
+  /** 失败原因（error 阶段有效，已用户可读化） */
+  error: string;
+  /** 当前安装形态是否支持自动更新（便携版/开发模式为 false） */
+  supported: boolean;
+}
+
 const hg = window.hongguo;
 
 export const api = {
@@ -153,6 +177,24 @@ export const api = {
     /** 用系统浏览器打开 https 链接（白名单校验在主进程） */
     openExternal: (url: string): Promise<boolean> => hg.app.openExternal(url),
   },
+
+  // ===== 自动更新（electron-updater + GitHub Releases，任务 66） =====
+
+  /** 主进程更新状态快照（与 src/main/updater.ts UpdaterState 对应） */
+  updater: {
+    getState: (): Promise<UpdaterState> => hg.updater.getState(),
+    /** 同步设置页开关（true 开启定时检查；false 关闭自动检查） */
+    setEnabled: (value: boolean): Promise<UpdaterState> => hg.updater.setEnabled(value),
+    /** 手动检查更新（不受开关限制；结果经 onState 广播） */
+    check: (): Promise<void> => hg.updater.check(),
+    /** 触发下载更新包（仅 available 阶段有效；进度经 onState 广播） */
+    download: (): Promise<boolean> => hg.updater.download(),
+    /** 下载完成后重启并安装 */
+    install: (): Promise<boolean> => hg.updater.install(),
+    /** 订阅状态广播，返回解除监听函数 */
+    onState: (cb: (state: UpdaterState) => void): (() => void) =>
+      hg.updater.onState((s) => cb(s as UpdaterState)),
+  },
 };
 
 /** window.hongguo 全局类型（与 preload/index.ts 暴露的白名单一一对应） */
@@ -203,6 +245,14 @@ declare global {
         getLoginItem(): Promise<boolean>;
         getVersion(): Promise<string>;
         openExternal(url: string): Promise<boolean>;
+      };
+      updater: {
+        getState(): Promise<UpdaterState>;
+        setEnabled(value: boolean): Promise<UpdaterState>;
+        check(): Promise<void>;
+        download(): Promise<boolean>;
+        install(): Promise<boolean>;
+        onState(cb: (state: UpdaterState) => void): () => void;
       };
     };
   }

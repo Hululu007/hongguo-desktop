@@ -98,6 +98,26 @@ const api = {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
     openExternal: (url: string) => ipcRenderer.invoke('app:openExternal', url),
   },
+
+  /** 自动更新（任务 66）：状态快照 / 开关同步 / 手动检查 / 重启安装 / 状态事件 */
+  updater: {
+    /** 读取主进程当前更新状态快照 */
+    getState: () => ipcRenderer.invoke('hg:updater:get-state'),
+    /** 同步设置页开关（true 开启定时检查；false 关闭自动检查） */
+    setEnabled: (value: boolean) => ipcRenderer.invoke('hg:updater:set-enabled', value),
+    /** 手动检查更新（不受开关限制；结果经 onState 广播） */
+    check: () => ipcRenderer.invoke('hg:updater:check'),
+    /** 触发下载更新包（仅 available 阶段有效；进度经 onState 广播） */
+    download: () => ipcRenderer.invoke('hg:updater:download'),
+    /** 下载完成后重启并安装（仅 downloaded 阶段有效） */
+    install: () => ipcRenderer.invoke('hg:updater:install'),
+    /** 订阅状态广播（主进程 → 全部窗口），返回取消订阅函数 */
+    onState: (cb: (state: unknown) => void) => {
+      const handler = (_e: unknown, s: unknown) => cb(s);
+      ipcRenderer.on('hg:updater:state', handler);
+      return () => ipcRenderer.removeListener('hg:updater:state', handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('hongguo', api);

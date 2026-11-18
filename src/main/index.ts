@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import { registerIpc } from './ipc';
 import { appState, createMainWindow, createTray, showMainWindow } from './window';
+import { initUpdater } from './updater';
 
 app.setName('黑果短剧');
 
@@ -19,6 +20,8 @@ if (!gotLock) {
   void app.whenReady().then(() => {
     createMainWindow();
     createTray();
+    // 自动更新（任务 66）：注册 IPC + 接线事件 + 定时检查（不支持的环境自动降级）
+    initUpdater();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

@@ -273,3 +273,26 @@ export const IconEpList = (p: IconProps) => (
     <path d="M17 9.5v5l4-2.5-4-2.5Z" fill="currentColor" stroke="none" />
   </Base>
 );
+
+/* ===== iconfont 彩色符号（精灵图由 assets/iconfont.js 注入 <body>） ===== */
+
+interface IconfontProps {
+  /** iconfont 符号名（不含 "icon-" 前缀），如 "dianshiju" */
+  name: string;
+  /** 图标边长（px），默认 22（侧边栏菜单规范尺寸） */
+  size?: number;
+}
+
+/**
+ * 渲染 iconfont 彩色符号（多色填充，不继承 currentColor）。
+ * 符号自带圆形底，配合 .nav-icon 的圆角裁切呈现为方形圆角样式。
+ * @param {IconfontProps} props - name：符号名；size：边长。
+ * @returns {JSX.Element} 引用精灵图 <symbol> 的 SVG 元素。
+ */
+export function Iconfont({ name, size = 22 }: IconfontProps) {
+  return (
+    <svg width={size} height={size} className="iconfont-icon" aria-hidden="true">
+      <use href={`#icon-${name}`} />
+    </svg>
+  );
+}

@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
 import { ToastHost } from './components/Toast';
 import { CloseConfirmModal } from './components/CloseConfirmModal';
+import { UpdateModal } from './components/UpdateModal';
 import { api } from './api';
 import { useTheme } from './hooks/useTheme';
 import { HomePage } from './pages/HomePage';
@@ -93,6 +94,7 @@ function RootLayout() {
         <main className="app-main">{routes}</main>
       </div>
       <CloseConfirmModal open={closeOpen} onClose={closeConfirmModal} />
+      <UpdateModal />
       <ToastHost />
     </div>
   );

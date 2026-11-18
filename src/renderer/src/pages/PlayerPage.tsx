@@ -10,7 +10,7 @@ import Danmaku, { type DanmakuComment } from '../lib/danmaku.dom.js';
 import { renderDanmakuText } from '../lib/danmakuEmoji';
 import { probeHevcSupportSync, verifyHevcSupport } from '../lib/hevc';
 import {
-  IconFullscreen, IconPause, IconPlay, IconPrevEp, IconNextEp, IconVolume, IconWarning,
+  IconFullscreen, IconPause, IconPlay, IconPrevEp, IconNextEp, IconVolume,
   IconEpList,
 } from '../components/Icons';
 import type { Episode } from '../types';
@@ -949,7 +949,8 @@ export function PlayerPage() {
       ) : null}
       {playErr ? (
         <div className="player-mask">
-          <IconWarning size={28} />
+          {/* public/ 网络错误插画；相对路径规避打包后 file:// 绝对路径 404 */}
+          <img className="err-illus dark" src="errro-net.svg" alt="" draggable={false} />
           <p>{playErr}</p>
           {resetCount < MAX_DEVICE_RESETS ? (
             <button

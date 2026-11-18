@@ -1,23 +1,14 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useFavorites, useHistory } from '../stores';
-import {
-  IconHome,
-  IconTv,
-  IconPalette,
-  IconSparkles,
-  IconStar,
-  IconChart,
-  IconHeart,
-  IconClock,
-} from './Icons';
+import { Iconfont } from './Icons';
 import type { ReactNode } from 'react';
 
 /** 分类主菜单（对应 demo App 端目录协议的 3 个主分类，直达 /category/{main}） */
 const CATEGORIES: { to: string; icon: ReactNode; label: string }[] = [
-  { to: '/category/real-drama', icon: <IconTv />, label: '真人剧' },
-  { to: '/category/comic-drama', icon: <IconPalette />, label: 'AI漫剧' },
-  { to: '/category/ai-drama', icon: <IconSparkles />, label: 'AI短剧' },
+  { to: '/category/real-drama', icon: <Iconfont name="dianshiju" />, label: '真人剧' },
+  { to: '/category/comic-drama', icon: <Iconfont name="dongman" />, label: 'AI漫剧' },
+  { to: '/category/ai-drama', icon: <Iconfont name="shipin" />, label: 'AI短剧' },
 ];
 
 /**
@@ -72,15 +63,15 @@ export function Sidebar() {
       </div>
 
       <div className="nav-group">主菜单</div>
-      {item('/', <IconHome />, '首页')}
+      {item('/', <Iconfont name="yingshi" />, '首页')}
       {CATEGORIES.map((c) => item(c.to, c.icon, c.label, undefined, c.to))}
-      {item('/actors', <IconStar />, '剧星榜')}
-      {item('/rank', <IconChart />, '剧榜单')}
+      {item('/actors', <Iconfont name="xindong" />, '剧星榜')}
+      {item('/rank', <Iconfont name="quanwei" />, '剧榜单')}
 
       <div className="sidebar-bottom">
         <div className="nav-group">我的</div>
-        {item('/favorites', <IconHeart />, '我的收藏', Object.keys(favorites.items).length)}
-        {item('/history', <IconClock />, '观看历史', history.entries.length || undefined)}
+        {item('/favorites', <Iconfont name="shoucang" />, '我的收藏', Object.keys(favorites.items).length)}
+        {item('/history', <Iconfont name="zuji" />, '观看历史', history.entries.length || undefined)}
       </div>
     </aside>
   );

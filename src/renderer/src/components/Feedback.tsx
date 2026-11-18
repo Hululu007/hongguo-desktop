@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { IconFilm, IconWarning } from './Icons';
+import { IconFilm } from './Icons';
 
 interface EmptyStateProps {
   icon?: ReactNode;
@@ -29,9 +29,8 @@ export function Loading() {
 export function ErrorTip({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
     <div className="center-tip">
-      <div className="big warn">
-        <IconWarning size={40} />
-      </div>
+      {/* public/ 通用错误插画；相对路径规避打包后 file:// 绝对路径 404 */}
+      <img className="err-illus" src="error.svg" alt="" draggable={false} />
       <div className="error-tip">页面解析失败：{message}</div>
       {onRetry ? (
         <button className="btn ghost" style={{ marginTop: 16 }} onClick={onRetry}>

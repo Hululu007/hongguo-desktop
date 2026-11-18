@@ -34,6 +34,8 @@ export interface Settings {
   defaultSpeed: number;
   rememberProgress: boolean;
   theme: ThemeMode;
+  /** 自动更新开关（任务 66；缺省视为开启，旧配置兼容） */
+  autoUpdate: boolean;
 }
 
 // ===== stores（与原 @hongguo/core 行为一致） =====
@@ -86,6 +88,7 @@ export const settingsStore = createStore<
   defaultSpeed: 1.0,
   rememberProgress: true,
   theme: 'dark',
+  autoUpdate: true,
   update: (patch) => set(patch),
 }));
 
@@ -146,8 +149,10 @@ function wirePersistence(): void {
     void api.storage.set(KEY.history, s.entries);
   });
   settingsStore.subscribe((s) => {
-    const { autoNext, defaultSpeed, rememberProgress, theme } = s;
-    void api.storage.set(KEY.settings, { autoNext, defaultSpeed, rememberProgress, theme });
+    const { autoNext, defaultSpeed, rememberProgress, theme, autoUpdate } = s;
+    void api.storage.set(KEY.settings, { autoNext, defaultSpeed, rememberProgress, theme, autoUpdate });
+    // 开关同步到主进程：true 开启定时检查 / false 关闭（自动更新任务 66）
+    void api.updater.setEnabled(autoUpdate).catch(() => {});
   });
   searchHistoryStore.subscribe((s) => {
     void api.storage.set(KEY.searchHistory, s.items);

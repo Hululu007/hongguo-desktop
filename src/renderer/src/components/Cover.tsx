@@ -6,7 +6,7 @@ interface CoverProps {
   className?: string;
 }
 
-/** 海报封面：shimmer 占位 + 加载淡入 + 失败回退首字 */
+/** 海报封面：shimmer 占位 + 加载淡入 + 失败回退占位图 */
 export function Cover({ src, alt, className }: CoverProps) {
   const [state, setState] = useState<'loading' | 'loaded' | 'error'>('loading');
   const valid = !!src;
@@ -26,7 +26,10 @@ export function Cover({ src, alt, className }: CoverProps) {
           draggable={false}
         />
       ) : (
-        <div className="fallback">{alt.slice(0, 1)}</div>
+        <div className="fallback">
+          {/* public/ 占位图：封面失效/无封面时统一展示；相对路径规避打包后 file:// 绝对路径 404 */}
+          <img src="placeholder-error.svg" alt={alt} draggable={false} />
+        </div>
       )}
     </div>
   );
