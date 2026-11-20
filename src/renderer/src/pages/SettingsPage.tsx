@@ -67,12 +67,12 @@ export function SettingsPage() {
     setChecking(true);
     void api.updater.check();
   };
-  // 检查进入收尾阶段（离开 checking）即恢复按钮；同时给个轻提示
+  // 检查进入收尾阶段（离开 checking）即恢复按钮；仅手动检查给轻提示（启动/定时自动检查静默，任务 69）
   useEffect(() => {
     if (updateState.phase === 'checking') return;
     setChecking(false);
-    if (updateState.phase === 'idle') toast('当前已是最新版本');
-  }, [updateState.phase]);
+    if (updateState.phase === 'idle' && updateState.manual) toast('当前已是最新版本');
+  }, [updateState.phase, updateState.manual]);
 
   /** 「检查更新」行的状态说明（与主进程状态机逐段对应，任务 66-B） */
   const upStatusText = (() => {

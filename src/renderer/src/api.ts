@@ -62,6 +62,8 @@ export interface UpdaterState {
   error: string;
   /** 当前安装形态是否支持自动更新（便携版/开发模式为 false） */
   supported: boolean;
+  /** 本轮检查是否用户手动触发（自动检查静默，仅手动检查结果才提示） */
+  manual: boolean;
 }
 
 const hg = window.hongguo;

@@ -56,14 +56,14 @@ export function UpdateModal() {
     if (state.phase !== 'downloaded') installTriggeredRef.current = false;
   }, [state.phase]);
 
-  // 失败提示走轻量 toast（检查/下载失败都不打断使用）
+  // 失败提示走轻量 toast（仅手动检查可见；启动/定时自动检查完全静默，任务 69）
   useEffect(() => {
-    if (state.phase === 'error' && state.error && state.error !== lastError.current) {
+    if (state.phase === 'error' && state.manual && state.error && state.error !== lastError.current) {
       lastError.current = state.error;
       toast(`自动更新失败：${state.error}`);
     }
     if (state.phase !== 'error') lastError.current = '';
-  }, [state.phase, state.error]);
+  }, [state.phase, state.error, state.manual]);
 
   const startDownload = () => {
     if (starting) return;

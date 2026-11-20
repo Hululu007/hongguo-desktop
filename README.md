@@ -68,6 +68,8 @@ npm run dist
 
 本项目的接口协议分析与实现思路参考了开源项目 [zfdang/hongguo-open-player](https://github.com/zfdang/hongguo-open-player)，感谢原作者的出色工作。
 
+播放恢复、身份兜底等播放相关逻辑同步参考了 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)，感谢其持续维护。如果你需要在**手机 / Android TV 上直接使用 App**，推荐使用该项目：[N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)。
+
 ## 开源协议
 
 [AGPL-3.0](https://www.gnu.org/licenses/agpl-3.0.txt)（与参考项目 [hongguo-open-player](https://github.com/zfdang/hongguo-open-player) 一致）

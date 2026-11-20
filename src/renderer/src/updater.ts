@@ -6,7 +6,7 @@ import { api } from './api';
 import type { UpdaterState } from './api';
 
 let snapshot: UpdaterState = {
-  phase: 'idle', progress: 0, bps: 0, transferred: 0, total: 0, version: '', error: '', supported: true,
+  phase: 'idle', progress: 0, bps: 0, transferred: 0, total: 0, version: '', error: '', supported: true, manual: false,
 };
 const listeners = new Set<() => void>();
 let wired = false;

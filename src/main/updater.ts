@@ -49,6 +49,8 @@ export interface UpdaterState {
   error: string;
   /** 便携版/开发模式不支持自动更新 */
   supported: boolean;
+  /** 本轮检查是否用户手动触发（自动检查完全静默，仅手动检查的结果才提示） */
+  manual: boolean;
 }
 
 /** 自动检查间隔（6 小时） */
@@ -65,6 +67,7 @@ let state: UpdaterState = {
   version: '',
   error: '',
   supported: true,
+  manual: false,
 };
 let enabled = true;
 let checkTimer: NodeJS.Timeout | null = null;
@@ -119,7 +122,7 @@ async function runCheck(manual = false): Promise<void> {
   // 下载中/已就绪时不重复检查；available 状态允许重复检查（刷新版本号）
   if (state.phase === 'downloading' || state.phase === 'downloaded') return;
   try {
-    setState({ phase: 'checking', error: '' });
+    setState({ phase: 'checking', error: '', manual });
     await autoUpdater.checkForUpdates();
   } catch (err) {
     // 检查失败不打断使用：仅记状态（后台定时检查的失败静默，手动检查的失败用户可见）

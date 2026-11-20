@@ -7,7 +7,7 @@ const logger = require('../services/logger');
 const { getPlaybackDevice, DEFAULT_VERIFIED_DEVICE } = require('../native/playback-device');
 const loginState = require('../native/login-state');
 const { deviceKey } = require('../native/device-session');
-const { playbackRequestV5, shortplayRequest, SHORTPLAY_APIS } = require('./requests');
+const { playbackRequestV5, videoTabRequest, shortplayRequest, SHORTPLAY_APIS } = require('./requests');
 
 // 播放端点阶梯（5 通道，按序尝试；偏好路由记忆该设备上次成功通道）
 // PR#92：播放域主通道迁移至 reading.snssdk.com（multi_video_model/player/v1）
@@ -99,9 +99,12 @@ function buildPlaybackSteps(devKey) {
 
 /** 响应批量写入取址缓存（3 分钟 TTL，容量 64，与 demo cacheResponseEntries 一致） */
 function cacheResponseEntries(response) {
-    if (response?.data && typeof response.data === 'object') {
+    // data["1004"] 嵌套结构兼容（参考 hongguoTV MobilePlayback.kt entries 取值，
+    // `data["1004"] || data` 两种形态都支持）
+    const data = response?.data?.['1004'] || response?.data;
+    if (data && typeof data === 'object') {
         const now = Date.now();
-        for (const [id, entry] of Object.entries(response.data)) {
+        for (const [id, entry] of Object.entries(data)) {
             if (entry && (entry.video_model || entry.fallback_api)) {
                 entryCache.set(id, { entry, expires: now + 180000 });
             }
@@ -115,6 +118,10 @@ function cacheResponseEntries(response) {
 /**
  * 统一降级循环（demo 重构 + 任务 63 风暴治理收敛）：
  * - 播放通道业务拒绝（BUSINESS_REJECTED）直接上抛终止阶梯；
+ * - 业务码 10001/10002/110001（设备身份被上游拒绝，参考 14771e0 DeviceRejectedException）
+ *   抛 DEVICE_REJECTED 交由上层标记失败并走阶梯下一轮换设备；
+ * - 上游显式限流（RATE_LIMITED，参考 478f006 Retry-After 判定）直接上抛终止本轮，
+ *   不换端点、不换设备、不烧注册配额；
  * - 空响应立即终止本设备全部通道（设备身份已被风控标记，换端点无效，
  *   返回 allEmpty=true 交由上层换设备，对齐 openhongguo 空响应即弃用设备）；
  * - 网络类错误（非空响应）最多换一次异构端点重试（不同域名族）；
@@ -146,11 +153,18 @@ async function runPlaybackSteps(steps, vid, payload, device, execRequestJson, de
             if (step.kind === 'multi') {
                 const signed = playbackRequestV5(payload, device, step.apiBase);
                 const resp = await execRequestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
-                if (Number(resp?.Code || resp?.code || 0) !== 0) {
+                const bizCode = Number(resp?.Code || resp?.code || 0);
+                if (bizCode !== 0) {
+                    // 业务码设备拒绝（参考 14771e0：10001/10002/110001 为身份过期标志）；
+                    // 设备失败计数由传输层 recordResponse（BUSINESS_REJECTED）完成
+                    if (bizCode === 10001 || bizCode === 10002 || bizCode === 110001) {
+                        throw Object.assign(new Error('播放接口拒绝该设备身份'), { code: 'DEVICE_REJECTED', bizCode });
+                    }
                     throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
                 }
                 cacheResponseEntries(resp);
-                const hasEntry = Boolean(resp?.data?.[vid] || entryCache.get(vid)?.entry);
+                const dataEntries = resp?.data?.['1004'] || resp?.data;
+                const hasEntry = Boolean(dataEntries?.[vid] || entryCache.get(vid)?.entry);
                 if (hasEntry) setPreferredRoute(devKey, 'multi', step.apiBase);
                 return { response: resp, allEmpty: false };
             }
@@ -167,7 +181,9 @@ async function runPlaybackSteps(steps, vid, payload, device, execRequestJson, de
             allEmpty = false;
         } catch (err) {
             signal.throwIfAborted();
-            if (err.code === 'BUSINESS_REJECTED') throw err;
+            if (err.code === 'BUSINESS_REJECTED' || err.code === 'DEVICE_REJECTED') throw err;
+            // 上游显式限流（Retry-After）：直接终止本轮，不换端点不换设备（参考 478f006）
+            if (err.code === 'RATE_LIMITED') throw err;
             lastError = err;
             if (err.code !== 'EMPTY_RESPONSE') {
                 allEmpty = false;
@@ -186,6 +202,37 @@ async function runPlaybackSteps(steps, vid, payload, device, execRequestJson, de
         }
     }
     return { response: null, lastError, allEmpty };
+}
+
+/**
+ * video_tab 同身份兜底（参考 hongguoTV 478f006 tabVideoModel strict 形态）：
+ * v5 播放元数据偶发"空 200"时，用当前注册身份对 video_tab 接口 GET 重查一次当前集；
+ * video_id 参数严格精确匹配当前集（不取他集），取响应 data.video_model_data[id].video_model
+ * （兼容 data["1004"] 嵌套与 data 直挂两种形态）。成功时包装为播放阶梯统一响应形态，
+ * 失败（网络/业务码/结构不符）返回 null，由调用方继续走原有设备阶梯；
+ * 上游显式限流（RATE_LIMITED，即响应带 Retry-After）原样上抛终止本轮。
+ * @param {string} vid - 当前分集编号（严格精确匹配）
+ * @param {Object} device - 当前注册设备身份（同身份重查，不重新注册）
+ * @param {Function} execRequestJson - 传输层执行器（requestJson 包装，附诊断字段）
+ * @param {number} deadline - 取址截止时间戳（毫秒）
+ * @param {AbortSignal} signal - 中止信号
+ * @returns {Promise<Object|null>} 兜底成功返回 { code: 0, data: { [vid]: { video_model } } }，失败返回 null
+ * @throws {Error} 上游显式限流（RATE_LIMITED）时上抛
+ */
+async function tryVideoTabFallback(vid, device, execRequestJson, deadline, signal) {
+    try {
+        const signed = videoTabRequest(vid, device);
+        const resp = await execRequestJson(signed.url, { method: 'GET', headers: signed.headers }, deadline, signal);
+        if (Number(resp?.Code || resp?.code || 0) !== 0) return null;
+        const data = resp?.data?.video_model_data || resp?.data?.['1004'] || resp?.data;
+        const model = data?.[vid]?.video_model;
+        if (!model) return null;
+        return { code: 0, data: { [vid]: { video_model: model } } };
+    } catch (err) {
+        if (err.code === 'RATE_LIMITED') throw err;
+        logger.warn('AppSource', `video_tab 同身份兜底未取到当前集（${err?.code || err?.message || '未知错误'}），继续设备阶梯...`);
+        return null;
+    }
 }
 
 /** 等待在途取址任务完成（跟随调用方 signal 中止；最后一个等待者被中止时取消任务本身） */
@@ -221,8 +268,11 @@ let deviceProvenGood = false;
  * 同 vid 的并发取址共享同一次上游请求（调用方中止传播由 waitForInFlightEntry 处理）；
  * 强制刷新（refresh=true）清缓存与在途任务后重建。
  * 任务内部阶梯（本机自研，叠加于多端点阶梯之上）：
- * ① 当前设备全阶梯 → ② 新注册设备同步窗口重试 → ③ 非基准设备切基准重试（任务 53）
+ * ① 当前设备全阶梯（空响应时叠加 video_tab 同身份 GET 兜底一次，参考 478f006）
+ * → ② 新注册设备同步窗口重试 → ③ 非基准设备切基准重试（任务 53）
  * → ④ 注册全新匿名设备重试（任务 53 实测可恢复）。
+ * 业务码 10001/10002/110001（参考 14771e0）视为设备身份被拒，走阶梯下一轮换设备；
+ * 上游显式限流（Retry-After，参考 478f006）直接终止本轮，不换设备不烧注册配额。
  * @param {string} vid - 分集编号
  * @param {string[]} batch - 本次批量取址的分集编号列表（首元素为 vid）
  * @param {boolean} refresh - 是否强制刷新（绕过缓存与在途共享）
@@ -284,7 +334,28 @@ async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
         const diag = (err) => [err.bytes != null ? `bytes=${err.bytes}` : '', err.logid ? `logid=${err.logid}` : '',
             `iid=…${String(device.iid).slice(-4)}`, device.profile?.model ? `model=${device.profile.model}` : ''].filter(Boolean).join(', ');
 
-        let result = await runDeviceSteps(device);
+        let result = null;
+        try {
+            result = await runDeviceSteps(device);
+        } catch (err) {
+            if (err.code !== 'DEVICE_REJECTED') throw err;
+            // 业务码 10001/10002/110001（参考 14771e0 DeviceRejectedException）：当前设备
+            // 身份被上游拒绝 → 标记失败（传输层 recordResponse 已计入 consecutive_failures）
+            // 并走阶梯下一轮换设备重试；防循环沿用既有 RESET_COOLDOWN/注册失败冷却与
+            // 单轮注册上限，不另设新冷却
+            logger.warn('AppSource', `播放接口业务码 ${err.bizCode} 拒绝当前设备身份，切换设备重试... [iid=…${String(device.iid).slice(-4)}]`);
+            result = { response: null, allEmpty: true, lastError: err };
+        }
+        // video_tab 同身份兜底（参考 478f006）：首轮阶梯空响应时，先用当前注册身份
+        // GET 重查一次当前集；限流（RATE_LIMITED）已在上方抛出不会进入本兜底；
+        // 兜底失败（返回 null）则继续走原有设备阶梯
+        if (!result.response && result.allEmpty) {
+            const tabResp = await tryVideoTabFallback(vid, device, execRequestJson, deadline, internalSignal);
+            if (tabResp) {
+                cacheResponseEntries(tabResp);
+                result = { response: tabResp, allEmpty: false };
+            }
+        }
         if (!result.response && result.allEmpty && typeof getPlaybackDevice.fallbackToDefault === 'function'
             && DEFAULT_VERIFIED_DEVICE && device?.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
             // 任务 53：全部通道空响应且当前设备非基准设备 → 切内置基准设备重试（不消耗注册配额）；
@@ -311,7 +382,9 @@ async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
         // 同时持久化健康度时间戳，下次进程重启复用设备时同样受护栏保护（本机自研）
         deviceProvenGood = true;
         getPlaybackDevice.markDeviceGood?.();
-        const currentEntry = result.response.data?.[vid] || entryCache.get(vid)?.entry;
+        // data["1004"] 嵌套结构兼容（参考 MobilePlayback.kt entries 取值）
+        const dataEntries = result.response.data?.['1004'] || result.response.data;
+        const currentEntry = dataEntries?.[vid] || entryCache.get(vid)?.entry;
         if (!currentEntry) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: 'MISSING_MODEL' });
         return currentEntry;
     })().finally(() => {

@@ -427,6 +427,21 @@ async function requestJson(url, options, deadline, signal) {
         }
         if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
         if (!raw.trim()) {
+            // 上游显式限流（参考 hongguoTV 478f006 PlaybackServiceBackoffException）：空响应
+            // 且响应头带 Retry-After 时归类为限流错误（RATE_LIMITED），播放阶梯据此直接终止
+            // 本轮（不换端点、不换设备、不烧注册配额）；仅播放域路径生效（/player/ 与
+            // /video_tab/ 兜底端点），注册/搜索/元数据域维持 EMPTY_RESPONSE 分类
+            const retryAfter = String(response.headers?.['retry-after'] || '').trim();
+            if (retryAfter && (target.pathname.includes('/player/') || target.pathname.includes('/video_tab/'))) {
+                throw Object.assign(new Error('App 播放服务限流中，请稍后重试'), {
+                    code: 'RATE_LIMITED',
+                    status: response.status,
+                    retryAfter: retryAfter.slice(0, 64),
+                    bytes: Buffer.byteLength(raw),
+                    logid,
+                    requestId,
+                });
+            }
             // L0 静默拒绝：附带回包字节数与 logid，便于区分签名（L1）/设备（L2）/配额（L3）层
             throw Object.assign(new Error('App 接口返回空响应，可能是签名或设备鉴权问题'), {
                 code: 'EMPTY_RESPONSE',

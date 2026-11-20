@@ -26,6 +26,9 @@ const SHORTPLAY_APIS = [
 ];
 const SHORTPLAY_API = SHORTPLAY_APIS[0];
 
+// video_tab 兜底端点（参考 hongguoTV 478f006：PlayRetryPlan.hosts 首选域名，单次请求）
+const VIDEO_TAB_API = 'https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/';
+
 /**
  * 构造 v5 移动端签名的播放域请求（v04.10.03 机制，PR#106）。
  * v3 medusa 被当前播放端点以空 200 拒绝；v5 将注册设备三要素同时绑定进
@@ -58,6 +61,41 @@ function playbackRequestV5(payload, identity, apiBase) {
         headers.Cookie = [cookieHeader, authHeaders.Cookie].filter(Boolean).join('; ');
     }
     return { url, body, headers };
+}
+
+/**
+ * 构造 video_tab GET 同身份兜底请求（参考 hongguoTV 478f006 tabVideoModel strict 形态）：
+ * v5 播放元数据偶发"空 200"时，用当前注册身份对该端点 GET 重查当前集。
+ * 签名复用 v5 机制（同 V5_PLAYBACK_QUERY 设备参数 + 注册三要素，不重新注册）；
+ * GET 无请求体（无 Content-Type/x-ss-stub），业务参数按 GetVideoModelRequest 的
+ * snake_case 编入 query（缺任一字段服务端回 100103 PARAM_INVALID）。
+ * @param {string} vid - 当前分集编号（video_id 严格精确匹配，不取他集）
+ * @param {{device_id?: string, iid?: string, cdid?: string, cookie?: string}} identity - 注册设备身份（仅取三要素与 Cookie，会话/诊断字段不得进 query）
+ * @param {string} [apiBase] - video_tab 端点（默认参考项目首选域名）
+ * @returns {{url: string, headers: Object<string,string>}} 签名后请求（GET，无 body）
+ * @throws {Error} v5 签名分支试探未命中时抛出
+ */
+function videoTabRequest(vid, identity, apiBase = VIDEO_TAB_API) {
+    const { device_id = '', iid = '', cdid = '' } = identity || {};
+    const values = {
+        ...V5_PLAYBACK_QUERY,
+        iid: iid || '', cdid: cdid || '', device_id: device_id || '',
+        video_id: String(vid), video_id_type: '0', device_level: '1',
+        need_all_video_definition: '1', need_mp4_align: '0', use_os_player: '0',
+        video_platform: '1024', source: '0', from_video_id: '',
+    };
+    const { url, headers: signedHeaders } = signPlaybackV5(apiBase, values, null);
+    const headers = {
+        'User-Agent': V5_PLAYBACK_UA, Accept: 'application/json',
+        ...signedHeaders,
+    };
+    // 设备 Cookie 与登录态合并口径与 playbackRequestV5 一致（同身份同会话）
+    const cookieHeader = identity?.cookie || (iid ? `store-region=cn-bj; store-region-src=did; install_id=${iid}` : '');
+    const authHeaders = loginState.authHeaders();
+    if (cookieHeader || authHeaders.Cookie) {
+        headers.Cookie = [cookieHeader, authHeaders.Cookie].filter(Boolean).join('; ');
+    }
+    return { url, headers };
 }
 
 /**
@@ -105,4 +143,4 @@ function shortplayRequest(vid, identity, apiBase = SHORTPLAY_API) {
     return { url, body, headers };
 }
 
-module.exports = { playbackRequestV5, shortplayRequest, V5_PLAYBACK_QUERY, V5_PLAYBACK_UA, SHORTPLAY_APIS, SHORTPLAY_API };
+module.exports = { playbackRequestV5, videoTabRequest, shortplayRequest, V5_PLAYBACK_QUERY, V5_PLAYBACK_UA, SHORTPLAY_APIS, SHORTPLAY_API, VIDEO_TAB_API };
