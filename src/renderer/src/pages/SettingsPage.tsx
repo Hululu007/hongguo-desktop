@@ -21,6 +21,7 @@ const SECTIONS = [
   { key: 'player', label: '播放器' },
   { key: 'danmaku', label: '弹幕' },
   { key: 'app', label: '应用' },
+  { key: 'keys', label: '快捷键' },
   { key: 'about', label: '关于' },
 ] as const;
 type SectionKey = (typeof SECTIONS)[number]['key'];
@@ -401,6 +402,58 @@ export function SettingsPage() {
                 </div>
               </div>
               ) : null}
+            </div>
+          ) : null}
+
+          {active === 'keys' ? (
+            <div className="settings-group">
+              <h3>快捷键</h3>
+              {/* 全局与播放器快捷键一览（任务 70）：Alt+Q 为系统级全局键，应用在后台也生效 */}
+              <div className="setting-row">
+                <div>
+                  老板键 Alt+Q
+                  <div className="hint">
+                    系统级全局快捷键（应用在后台也生效）：一键隐藏 / 恢复主窗口与播放器窗口，
+                    隐藏时主窗口进入托盘
+                  </div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  聚焦搜索 <kbd className="kbd">Ctrl</kbd> + <kbd className="kbd">K</kbd>
+                  <div className="hint">主窗口内快速跳转搜索框</div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  播放 / 暂停 <kbd className="kbd">空格</kbd>
+                  <div className="hint">播放器窗口内生效</div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  快退 / 快进 5 秒 <kbd className="kbd">←</kbd> / <kbd className="kbd">→</kbd>
+                  <div className="hint">播放器窗口内生效</div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  音量增减 10% <kbd className="kbd">↑</kbd> / <kbd className="kbd">↓</kbd>
+                  <div className="hint">播放器窗口内生效</div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  全屏切换 <kbd className="kbd">F</kbd>
+                  <div className="hint">播放器窗口内生效</div>
+                </div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  关闭面板 / 退出全屏 <kbd className="kbd">Esc</kbd>
+                  <div className="hint">优先收起选集 / 弹幕设置等展开面板，再退出全屏</div>
+                </div>
+              </div>
             </div>
           ) : null}
 

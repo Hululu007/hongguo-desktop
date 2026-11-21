@@ -14,7 +14,7 @@ export function SearchPage() {
   const [params] = useSearchParams();
   const keyword = params.get('keyword') ?? '';
 
-  const { items, meta, loading, loadingMore, error, hasMore, loadMore, reload } =
+  const { items, meta, loading, loadingMore, error, hasMore, loadMore, retryMore, reload } =
     usePagedList(
       (page) =>
         api
@@ -41,7 +41,9 @@ export function SearchPage() {
       loadingMore={loadingMore}
       hasMore={hasMore}
       error={error}
+      hasItems={items.length > 0}
       onRetry={reload}
+      onRetryMore={retryMore}
       onLoadMore={loadMore}
       empty={
         items.length === 0 && !loading ? (

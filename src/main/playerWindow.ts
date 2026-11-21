@@ -8,6 +8,14 @@ import { join } from 'path';
  */
 let playerWin: BrowserWindow | null = null;
 
+/**
+ * 获取播放器窗口实例（老板键显隐用）。
+ * @returns {BrowserWindow | null} 播放器窗口；不存在或已销毁时返回 null。
+ */
+export function getPlayerWindow(): BrowserWindow | null {
+  return playerWin && !playerWin.isDestroyed() ? playerWin : null;
+}
+
 export function createPlayerWindow(seriesId: string, itemId: string): void {
   if (playerWin && !playerWin.isDestroyed()) {
     playerWin.focus();

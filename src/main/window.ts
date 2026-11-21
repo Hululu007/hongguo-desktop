@@ -1,5 +1,6 @@
-import { app, BrowserWindow, Menu, Tray, ipcMain } from 'electron';
+import { app, BrowserWindow, globalShortcut, Menu, Tray, ipcMain } from 'electron';
 import { join } from 'path';
+import { getPlayerWindow } from './playerWindow';
 
 /**
  * 主窗口与托盘管理：
@@ -58,6 +59,41 @@ export function hideMainWindowToTray(): void {
   if (!win || win.isDestroyed()) return;
   createTray();
   win.hide();
+}
+
+/**
+ * 老板键（Alt+Q，全局快捷键）：一键隐藏或恢复主窗口与播放器窗口（任务 70）。
+ * 任一窗口可见（含最小化）时按下 → 隐藏主窗口（入托盘）与播放器；
+ * 两者都不可见时按下 → 恢复并聚焦主窗口与播放器。
+ * @returns {void}
+ */
+export function toggleAllWindowsViaBossKey(): void {
+  const main = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const player = getPlayerWindow();
+  const anyVisible =
+    (!!main && (main.isVisible() || main.isMinimized())) || (!!player && (player.isVisible() || player.isMinimized()));
+  if (anyVisible) {
+    main?.hide();
+    player?.hide();
+  } else {
+    showMainWindow();
+    if (player) {
+      if (player.isMinimized()) player.restore();
+      player.show();
+      player.focus();
+    }
+  }
+}
+
+/**
+ * 注册全局老板键 Alt+Q（应用就绪后调用一次；应用退出时统一 unregisterAll）。
+ * @returns {void}
+ */
+export function registerBossKey(): void {
+  if (!globalShortcut.register('Alt+Q', toggleAllWindowsViaBossKey)) {
+    // 注册失败（被其他应用占用）不打断启动，仅记录
+    console.warn('[Window] 老板键 Alt+Q 注册失败（可能被其他应用占用）');
+  }
 }
 
 /** 真正退出应用（will-quit 钩子会关闭流端点） */

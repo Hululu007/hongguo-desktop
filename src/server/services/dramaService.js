@@ -88,7 +88,9 @@ class DramaService {
   }
 
   /**
-   * 分类列表实际拉取（无去重，供 catalog 包装调用）
+   * 分类列表实际拉取（无去重，供 catalog 包装调用）。
+   * 上游偶发故障（如 502）自动退避重试 2 次（300/800ms），仅重试瞬态错误
+   * （网络异常 / 5xx / 429）；业务码错误（APP_BUSINESS 等）不重试。
    * @param {number} page - 页码
    * @param {string} category - 分类标识
    * @param {string} genre - 题材筛选
@@ -98,19 +100,55 @@ class DramaService {
   async fetchCatalog(page, category, genre) {
     const t0 = Date.now();
     logger.info('DramaService', `获取分类短剧列表 category=${category}, genre="${genre}", page=${page}`);
-    try {
-      const res = await hgCatalog.browseList({ page, category, genre });
-      if (res && res.success !== false && Array.isArray(res.results)) {
-        logger.info('DramaService', `成功获取分类短剧: 返回 ${res.results.length} 部短剧, total=${res.total}, 耗时 ${Date.now() - t0}ms`);
-        this.catalogCache.set(`${page}|${category}|${genre}`, { data: res, expires: Date.now() + 15000 });
-        return res;
-      }
-    } catch (e) {
-      logger.warn('DramaService', `App端目录获取失败，尝试降级: ${e.message}`);
-    }
+    /** 协议层瞬时故障码：可退避重试（网络/超时/上游业务码偶发故障） */
+    const TRANSIENT_CODES = ['APP_NETWORK', 'APP_TIMEOUT', 'APP_BUSINESS'];
+    /** 瞬态错误判定：协议层 fail 的 code 白名单；无 code 的意外异常（网络层）也视为瞬态 */
+    const isTransient = (e) => (e?.code ? TRANSIENT_CODES.includes(e.code) : true);
+    /**
+     * 协议层 fail 对象（{success:false, error, code, sourceUrl}）→ Error：
+     * 透传真实原因（去掉"可重试或切换官网"尾巴），避免笼统的"结构异常"掩盖根因。
+     * @param {object} res - browseList 返回的 fail 对象
+     * @returns {Error} 带 code 的错误
+     */
+    const failOf = (res) => {
+      const msg = String(res?.error || '目录接口响应结构异常').replace(/，?可重试或切换官网$/, '');
+      const e = new Error(msg);
+      e.code = res?.code;
+      return e;
+    };
+    /** 重试退避间隔（ms）：首试 + 2 次重试 */
+    const RETRY_DELAYS = [300, 800];
+    let lastErr = null;
 
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      try {
+        const res = await hgCatalog.browseList({ page, category, genre });
+        if (res && res.success !== false && Array.isArray(res.results)) {
+          logger.info('DramaService', `成功获取分类短剧: 返回 ${res.results.length} 部短剧, total=${res.total}, 耗时 ${Date.now() - t0}ms`);
+          this.catalogCache.set(`${page}|${category}|${genre}`, { data: res, expires: Date.now() + 15000 });
+          return res;
+        }
+        // 协议层失败对象（success:false）：真实原因在 res.error/res.code，记录后按码决定是否重试
+        lastErr = failOf(res);
+        logger.warn('DramaService', `App端目录返回失败(第 ${attempt + 1} 次尝试): code=${lastErr.code || '-'} message=${lastErr.message}`);
+      } catch (e) {
+        lastErr = e;
+        logger.warn('DramaService', `App端目录请求异常(第 ${attempt + 1} 次尝试): ${e.message}`);
+      }
+      if (attempt < RETRY_DELAYS.length && isTransient(lastErr)) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+        continue;
+      }
+      break;
+    }
+    logger.warn('DramaService', `App端目录多次尝试后仍失败: code=${lastErr?.code || '-'} message=${lastErr?.message || 'unknown'}`);
+
+    // 会话游标失效（分页记录过期被丢弃）：重试同页永远无游标，引导用户刷新重建
+    if (lastErr?.code === 'APP_CURSOR') {
+      throw Object.assign(new Error('列表已过期，请刷新重新加载'), { status: 502 });
+    }
     if (category !== 'hot-drama' || genre) {
-      throw Object.assign(new Error('所选分类暂不可用，请稍后重试'), { status: 502 });
+      throw Object.assign(new Error(lastErr?.message || '所选分类暂不可用，请稍后重试'), { status: 502 });
     }
     // Only the general hot chart can fall back to a general hot search.
     try {

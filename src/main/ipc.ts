@@ -440,6 +440,8 @@ function toUserError(e: unknown): Error {
   );
   const code = String(err?.code ?? '');
   const msg = String(err?.message ?? '');
+  // 服务层已给出中文用户可读提示（如「列表已过期，请刷新重新加载」）：直接透传，避免笼统文案掩盖根因
+  if (/[\u4e00-\u9fff]/.test(msg)) return new Error(msg);
   let text = '加载失败，请稍后重试';
   if (code === 'EMPTY_RESPONSE' || msg.includes('空响应')) text = '视频服务暂时无响应，请稍后重试';
   else if (code === 'RATE_LIMITED' || msg.includes('冷却') || msg.includes('频繁')) text = '操作过于频繁，请稍等片刻再试';

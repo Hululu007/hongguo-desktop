@@ -28,7 +28,10 @@ let clientPromise = null;
 function getClient() {
     if (!clientPromise) {
         clientPromise = (async () => {
-            const oh = require('openhongguo');
+            // openhongguo 是 ESM-only 包（type: module，named exports）且内部用 import.meta.url
+            // 定位 dist 下的 WASM：必须保持 external 并用动态 import() 加载。
+            // CJS require 会报 ERR_REQUIRE_ESM；打包进 bundle 会破坏其 WASM 路径定位。
+            const oh = await import('openhongguo');
             return oh.createClient({
                 profile: oh.fileProfileStore(PROFILE_FILE),
                 transport: oh.nodeTransport({ timeoutMs: 8000 }),

@@ -66,7 +66,50 @@ export interface UpdaterState {
   manual: boolean;
 }
 
-const hg = window.hongguo;
+/**
+ * 剥离 Electron IPC 错误前缀：ipcMain.handle 抛出的错误经 ipcRenderer.invoke
+ * 会被 Electron 包装为 "Error invoking remote method 'net:xxx': Error: 原始信息"，
+ * 此处剥掉包装（含嵌套的 "Error:"），仅向用户展示真实错误内容。
+ * @param {unknown} e - IPC 链路 rejection 的原始错误
+ * @returns {Error} 仅含真实错误信息的新 Error
+ */
+function stripIpcPrefix(e: unknown): Error {
+  const msg = e instanceof Error ? e.message : String(e);
+  return new Error(
+    msg.replace(/Error invoking remote method '[^']+':\s*(?:Error:\s*)?/g, '').trim(),
+  );
+}
+
+/**
+ * 递归包装 preload 暴露的 window.hongguo API：所有 Promise 调用在 rejection 时
+ * 统一剥离 IPC 错误前缀（一处生效，覆盖全部页面与播放器）。
+ * 非函数/非对象成员原样保留；返回值不是 Promise 的方法（如事件订阅）不做包装。
+ * @param {T} obj - preload API 对象（嵌套 win/app/updater/storage 等）
+ * @returns {T} 包装后的同结构对象
+ */
+function wrapHg<T>(obj: T): T {
+  if (typeof obj !== 'object' || obj === null) return obj;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof value === 'function') {
+      out[key] = (...args: unknown[]) => {
+        const r = (value as (...a: unknown[]) => unknown)(...args);
+        // 仅包装返回 Promise 的调用（事件订阅返回解绑函数，原样透传）
+        if (r && typeof (r as Promise<unknown>).catch === 'function') {
+          return (r as Promise<unknown>).catch((err: unknown) => Promise.reject(stripIpcPrefix(err)));
+        }
+        return r;
+      };
+    } else if (typeof value === 'object' && value !== null) {
+      out[key] = wrapHg(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out as T;
+}
+
+const hg = wrapHg(window.hongguo);
 
 export const api = {
   // ===== 数据获取 =====

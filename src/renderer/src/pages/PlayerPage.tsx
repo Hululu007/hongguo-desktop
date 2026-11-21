@@ -197,6 +197,8 @@ export function PlayerPage() {
   const boxRef = useRef<HTMLDivElement>(null);
   const lastSaveRef = useRef(0);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 选集面板中"当前集"按钮：面板展开/切集时滚动到面板可视区中间 */
+  const curEpBtnRef = useRef<HTMLButtonElement | null>(null);
 
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.getDetail>> | null>(null);
   const [detailErr, setDetailErr] = useState('');
@@ -289,6 +291,13 @@ export function PlayerPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ===== 选集面板定位：面板展开或切集时，把当前集滚动到面板可视区中间 =====
+  // block:'center' 由浏览器处理边界（首/末集自动贴近顶部/底部，不强制居中）
+  useEffect(() => {
+    if (!epOpen) return;
+    curEpBtnRef.current?.scrollIntoView({ block: 'center' });
+  }, [epOpen, itemId]);
 
   // ===== 视频直链（随集切换；force 跳过主进程缓存重取） =====
   const retryRef = useRef(0);
@@ -1022,6 +1031,7 @@ export function PlayerPage() {
                   {g.map((ep) => (
                     <button
                       key={ep.index}
+                      ref={ep.id === itemId ? curEpBtnRef : undefined}
                       className={`pw-ep-row${ep.id === itemId ? ' current' : ''}${!ep.id && ep.locked ? ' locked' : ''}`}
                       onClick={() => goEpisode(ep)}
                       disabled={!ep.id && !!ep.locked}

@@ -25,7 +25,7 @@ export function ActorsPage() {
   const [gender, setGender] = useState('');
   /** 榜单统计日期（上游协议 rank_date，随分页响应透传，取一次即可） */
   const [rankDate, setRankDate] = useState('');
-  const { items, loading, loadingMore, error, hasMore, loadMore, reload } = usePagedList<ActorCard>(
+  const { items, loading, loadingMore, error, hasMore, loadMore, retryMore, reload } = usePagedList<ActorCard>(
     (page) =>
       api.getActorRanking(page, gender || undefined).then((r) => {
         setRankDate(r.rankDate || '');
@@ -59,7 +59,9 @@ export function ActorsPage() {
       loadingMore={loadingMore}
       hasMore={hasMore}
       error={error}
+      hasItems={items.length > 0}
       onRetry={reload}
+      onRetryMore={retryMore}
       onLoadMore={loadMore}
       empty={!loading && !error && items.length === 0 ? <div className="center-tip">暂无上榜演员</div> : undefined}
     >

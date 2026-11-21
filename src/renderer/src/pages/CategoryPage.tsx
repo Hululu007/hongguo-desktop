@@ -19,7 +19,7 @@ export function CategoryPage() {
   // 切换主分类时重置子标签
   useEffect(() => setSub(''), [main]);
 
-  const { items, meta, loading, loadingMore, error, hasMore, loadMore, reload } =
+  const { items, meta, loading, loadingMore, error, hasMore, loadMore, retryMore, reload } =
     usePagedList(
       (page) =>
         api
@@ -58,7 +58,9 @@ export function CategoryPage() {
       loadingMore={loadingMore}
       hasMore={hasMore}
       error={error}
+      hasItems={items.length > 0}
       onRetry={reload}
+      onRetryMore={retryMore}
       onLoadMore={loadMore}
       empty={
         items.length === 0 ? <div className="center-tip">该分类暂无内容</div> : null

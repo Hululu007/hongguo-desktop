@@ -26,7 +26,7 @@ export function RankPage() {
     if (key && key !== tab) setTab(key);
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { items, meta, loading, loadingMore, error, hasMore, loadMore, reload } =
+  const { items, meta, loading, loadingMore, error, hasMore, loadMore, retryMore, reload } =
     usePagedList(
       (page) =>
         api.getRank(tab, page).then((r) => ({ items: r.items, meta: { tabs: r.tabs } })),
@@ -67,7 +67,9 @@ export function RankPage() {
       loadingMore={loadingMore}
       hasMore={hasMore}
       error={error}
+      hasItems={items.length > 0}
       onRetry={reload}
+      onRetryMore={retryMore}
       onLoadMore={loadMore}
       empty={!loading && !error && items.length === 0 ? <div className="center-tip">该榜单暂无内容</div> : undefined}
     >

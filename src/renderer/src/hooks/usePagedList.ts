@@ -28,6 +28,10 @@ export function usePagedList<T extends { id: string }, M = unknown>(
   const seq = useRef(0);
   const fetchRef = useRef(fetchPage);
   fetchRef.current = fetchPage;
+  /** 最近一次追加失败的时间戳：滚动自动续载在冷却期内忽略，避免上游抖动（如偶发 502）时高频重试 */
+  const lastFailAtRef = useRef(0);
+  /** 追加失败后的冷却时长（ms） */
+  const LOAD_MORE_COOLDOWN_MS = 5000;
 
   const load = useCallback(async (p: number, replace: boolean) => {
     const mySeq = ++seq.current;
@@ -51,7 +55,8 @@ export function usePagedList<T extends { id: string }, M = unknown>(
           // 首屏失败：数据为空，置 hasMore=false 停止翻页
           setHasMore(false);
         } else {
-          // 追加页失败：回滚页码并保留 hasMore，滚动重试仍会请求同一页
+          // 追加页失败：回滚页码并保留 hasMore；记录失败时间供 loadMore 冷却
+          lastFailAtRef.current = Date.now();
           setPage((prev) => Math.max(1, prev - 1));
         }
       }
@@ -72,8 +77,22 @@ export function usePagedList<T extends { id: string }, M = unknown>(
     void load(1, true);
   }, [resetKey, load]);
 
+  /** 追加下一页（滚动自动触发路径）：失败后 5s 冷却期内忽略，避免同一秒内连发两次请求 */
   const loadMore = useCallback(() => {
     if (loading || loadingMore || !hasMore) return;
+    if (Date.now() - lastFailAtRef.current < LOAD_MORE_COOLDOWN_MS) return;
+    const next = page + 1;
+    setPage(next);
+    void load(next, false);
+  }, [page, loading, loadingMore, hasMore, load]);
+
+  /**
+   * 手动重试追加页（列表底部重试按钮）：不受失败冷却限制。
+   * 追加失败时页码已回滚，此处重试请求的正是上次失败的同一页。
+   */
+  const retryMore = useCallback(() => {
+    if (loading || loadingMore || !hasMore) return;
+    lastFailAtRef.current = 0;
     const next = page + 1;
     setPage(next);
     void load(next, false);
@@ -85,5 +104,5 @@ export function usePagedList<T extends { id: string }, M = unknown>(
     void load(1, true);
   }, [load]);
 
-  return { items, meta, loading, loadingMore, error, hasMore, loadMore, reload };
+  return { items, meta, loading, loadingMore, error, hasMore, loadMore, retryMore, reload };
 }

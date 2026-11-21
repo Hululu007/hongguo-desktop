@@ -15,6 +15,7 @@ const DANMAKU_EMOJI: Record<string, string> = {
   // ── 笑脸/正向 ──
   微笑: '🙂',
   呲牙: '😀',
+  笑: '😀',
   憨笑: '😆',
   大笑: '😄',
   哈哈: '😃',
@@ -80,6 +81,10 @@ const DANMAKU_EMOJI: Record<string, string> = {
   睡: '😴',
   生病: '🤒',
   戴口罩: '😷',
+  探究: '🤔',
+  尬笑: '😂',
+  奸笑: '😂',
+  懂了: '😌',
 
   // ── 手势/互动 ──
   赞: '👍',
@@ -97,6 +102,7 @@ const DANMAKU_EMOJI: Record<string, string> = {
   招手: '👋',
 
   // ── 物品/符号 ──
+  送花: '💐',
   玫瑰: '🌹',
   凋谢: '🥀',
   嘴唇: '👄',
