@@ -1966,6 +1966,11 @@ textarea:focus-visible {
   transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .pw-btn:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+/* 钉住开启态：主题色高亮（图钉按下） */
+.pw-btn.on {
+  color: var(--brand);
+  background: rgba(255, 255, 255, 0.14);
+}
 /* 关闭待确认态（首次点击后 2.5s 内）：高亮提示"再点一次" */
 .pw-btn.armed {
   background: rgba(255, 77, 109, 0.92);

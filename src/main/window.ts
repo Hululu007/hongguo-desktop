@@ -61,23 +61,31 @@ export function hideMainWindowToTray(): void {
   win.hide();
 }
 
+/** 老板键隐藏前各窗口的可见状态：恢复时按各自记忆还原（任务 71 追加：只恢复隐藏前可见的窗口） */
+const bossKeyState: { mainVisible: boolean; playerVisible: boolean } = {
+  mainVisible: true,
+  playerVisible: false,
+};
+
 /**
  * 老板键（Alt+Q，全局快捷键）：一键隐藏或恢复主窗口与播放器窗口（任务 70）。
- * 任一窗口可见（含最小化）时按下 → 隐藏主窗口（入托盘）与播放器；
- * 两者都不可见时按下 → 恢复并聚焦主窗口与播放器。
+ * 任一窗口可见（含最小化）时按下 → 记录各窗口当前可见状态后隐藏主窗口（入托盘）与播放器；
+ * 两者都不可见时按下 → 按隐藏前各自的可见状态恢复（例：隐藏前仅播放器可见，则只恢复播放器）。
  * @returns {void}
  */
 export function toggleAllWindowsViaBossKey(): void {
   const main = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
   const player = getPlayerWindow();
-  const anyVisible =
-    (!!main && (main.isVisible() || main.isMinimized())) || (!!player && (player.isVisible() || player.isMinimized()));
-  if (anyVisible) {
+  const mainVisible = !!main && (main.isVisible() || main.isMinimized());
+  const playerVisible = !!player && (player.isVisible() || player.isMinimized());
+  if (mainVisible || playerVisible) {
+    bossKeyState.mainVisible = mainVisible;
+    bossKeyState.playerVisible = playerVisible;
     main?.hide();
     player?.hide();
   } else {
-    showMainWindow();
-    if (player) {
+    if (bossKeyState.mainVisible) showMainWindow();
+    if (player && bossKeyState.playerVisible) {
       if (player.isMinimized()) player.restore();
       player.show();
       player.focus();
@@ -217,4 +225,11 @@ export function registerWindowIpc(): void {
   });
   /** 渲染层已响应关闭确认弹窗（选择/取消均可），清除 3s 兜底定时器 */
   ipcMain.handle('win:closeResponded', () => clearCloseFallback());
+  /** 切换窗口置顶（播放器「钉住」按钮）：floating 层级，不抢焦点。@returns 切换后的置顶状态 */
+  ipcMain.handle('win:toggleAlwaysOnTop', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return false;
+    win.setAlwaysOnTop(!win.isAlwaysOnTop(), 'floating');
+    return win.isAlwaysOnTop();
+  });
 }

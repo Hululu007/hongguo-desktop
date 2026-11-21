@@ -274,6 +274,14 @@ export const IconEpList = (p: IconProps) => (
   </Base>
 );
 
+/** 图钉（播放器「钉住」按钮：窗口置顶） */
+export const IconPin = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M12 16.5V21" />
+    <path d="M9.2 10.9a2 2 0 0 1-1.1 1.8l-1.6.8A2 2 0 0 0 5.4 15.3v.7a1 1 0 0 0 1 1h11.2a1 1 0 0 0 1-1v-.7a2 2 0 0 0-1.1-1.8l-1.6-.8a2 2 0 0 1-1.1-1.8V6h1a1.8 1.8 0 1 0 0-3.6H8.2a1.8 1.8 0 1 0 0 3.6h1v4.9Z" />
+  </Base>
+);
+
 /* ===== iconfont 彩色符号（精灵图由 assets/iconfont.js 注入 <body>） ===== */
 
 interface IconfontProps {

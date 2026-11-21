@@ -45,6 +45,10 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
   playerWin.on('closed', () => {
     playerWin = null;
   });
+  // 窗口被隐藏（老板键 Alt+Q 等）时通知渲染层暂停播放，避免隐藏后声音继续外放
+  playerWin.on('hide', () => {
+    playerWin?.webContents.send('player:window-hidden');
+  });
 
   // ===== 控制台调试模式（与主窗口一致）：F12 / Ctrl+Shift+I 开关 DevTools =====
   playerWin.webContents.on('before-input-event', (_e, input) => {

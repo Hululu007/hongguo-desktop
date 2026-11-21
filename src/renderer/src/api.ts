@@ -202,6 +202,10 @@ export const api = {
       hg.win.setCloseAction(action),
     /** 通知主进程关闭确认弹窗已响应（选择/取消均可），清除 3s 关闭兜底定时器 */
     closeResponded: (): Promise<void> => hg.win.closeResponded(),
+    /** 切换窗口置顶（播放器「钉住」按钮）。@returns 切换后的置顶状态 */
+    toggleAlwaysOnTop: (): Promise<boolean> => hg.win.toggleAlwaysOnTop(),
+    /** 播放器窗口被隐藏（老板键等），返回解除监听函数 */
+    onPlayerWindowHidden: (cb: () => void): (() => void) => hg.win.onPlayerWindowHidden(cb),
     /** 主进程转发的关闭请求（Alt+F4 等），返回解除监听函数 */
     onCloseRequested: (cb: () => void): (() => void) => hg.win.onCloseRequested(cb),
     openPlayer: (seriesId: string, itemId: string): Promise<void> =>
@@ -279,6 +283,8 @@ declare global {
         quitApp(): Promise<void>;
         setCloseAction(action: 'ask' | 'quit' | 'tray'): Promise<void>;
         closeResponded(): Promise<void>;
+        toggleAlwaysOnTop(): Promise<boolean>;
+        onPlayerWindowHidden(cb: () => void): () => void;
         onCloseRequested(cb: () => void): () => void;
         openPlayer(seriesId: string, itemId: string): Promise<void>;
         fitToVideo(ratio: number): Promise<boolean>;

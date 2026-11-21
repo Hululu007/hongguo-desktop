@@ -11,7 +11,7 @@ import { renderDanmakuText } from '../lib/danmakuEmoji';
 import { probeHevcSupportSync, verifyHevcSupport } from '../lib/hevc';
 import {
   IconFullscreen, IconPause, IconPlay, IconPrevEp, IconNextEp, IconVolume,
-  IconEpList,
+  IconEpList, IconPin,
 } from '../components/Icons';
 import type { Episode } from '../types';
 import { DM_ROW_HEIGHT, DM_ROW_OPTIONS, DM_SPEEDS, readDanmakuPrefs, writeDanmakuPrefs } from '../danmakuPrefs';
@@ -235,6 +235,8 @@ export function PlayerPage() {
   const [isFull, setIsFull] = useState(false);
   /** 选集面板展开态（控制栏内的展开控件） */
   const [epOpen, setEpOpen] = useState(false);
+  /** 钉住状态：开启后播放器窗口始终置顶显示 */
+  const [pinned, setPinned] = useState(false);
   /** 即将进入下一集提示（剩余播放时间 ≤3s 时显示） */
   const [nextTip, setNextTip] = useState(false);
 
@@ -288,6 +290,15 @@ export function PlayerPage() {
     return api.win.onPlayerOpen((p) => {
       if (!p?.seriesId) return;
       navigate(p.itemId ? `/player/${p.seriesId}/${p.itemId}` : `/player/${p.seriesId}`);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ===== 窗口隐藏时自动暂停播放：老板键 Alt+Q 等隐藏播放器后，避免声音继续外放 =====
+  // 直接操作 video.pause()（复用统一暂停逻辑：onPause 事件驱动 playing 状态与进度保存）
+  useEffect(() => {
+    return api.win.onPlayerWindowHidden(() => {
+      videoRef.current?.pause();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -771,6 +782,20 @@ export function PlayerPage() {
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
     closeTimerRef.current = setTimeout(() => setCloseArmed(false), 2500);
   }, [closeArmed]);
+
+  /**
+   * 钉住/取消钉住（窗口始终置顶）：状态以主进程返回值为准，toast 提示结果。
+   * @returns {void}
+   */
+  const togglePinned = useCallback(() => {
+    void api.win
+      .toggleAlwaysOnTop()
+      .then((on) => {
+        setPinned(on);
+        toast(on ? '已钉住：播放器置顶显示' : '已取消钉住');
+      })
+      .catch(() => {});
+  }, []);
   useEffect(
     () => () => {
       if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
@@ -894,13 +919,21 @@ export function PlayerPage() {
       onMouseMove={pokeControls}
       onMouseLeave={() => playing && setShowControls(false)}
     >
-      {/* ===== 顶部栏：标题 + 关闭（可拖拽移动窗口；显隐跟随控制栏） ===== */}
+      {/* ===== 顶部栏：标题 + 钉住/关闭（可拖拽移动窗口；显隐跟随控制栏） ===== */}
       <header className="pw-top">
         <div className="pw-top-title">
           <span className="pw-drama">{detail.title}</span>
           {curEp ? <span className="pw-ep">第 {curEp.index} 集</span> : null}
         </div>
         <span className="pw-flex" />
+        <button
+          className={`pw-btn${pinned ? ' on' : ''}`}
+          onClick={togglePinned}
+          aria-label={pinned ? '取消钉住' : '钉住（窗口置顶）'}
+          title={pinned ? '取消钉住' : '钉住：播放器始终置顶显示'}
+        >
+          <IconPin size={17} />
+        </button>
         <button
           className={`pw-btn${closeArmed ? ' armed' : ''}`}
           onClick={onCloseClick}

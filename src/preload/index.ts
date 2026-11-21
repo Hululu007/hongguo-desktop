@@ -68,6 +68,14 @@ const api = {
       ipcRenderer.invoke('win:setCloseAction', action),
     /** 通知主进程关闭确认弹窗已响应（选择/取消均可），清除 3s 兜底定时器 */
     closeResponded: () => ipcRenderer.invoke('win:closeResponded'),
+    /** 切换窗口置顶（播放器「钉住」按钮）。@returns 切换后的置顶状态 */
+    toggleAlwaysOnTop: () => ipcRenderer.invoke('win:toggleAlwaysOnTop'),
+    /** 播放器窗口被隐藏（老板键等），渲染层据此自动暂停播放 */
+    onPlayerWindowHidden: (cb: () => void) => {
+      const handler = () => cb();
+      ipcRenderer.on('player:window-hidden', handler);
+      return () => ipcRenderer.removeListener('player:window-hidden', handler);
+    },
     /** 主进程转发的关闭请求（Alt+F4 / 系统级关闭），渲染层据此弹出关闭确认弹窗 */
     onCloseRequested: (cb: () => void) => {
       const handler = () => cb();
