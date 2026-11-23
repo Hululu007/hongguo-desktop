@@ -164,14 +164,52 @@ function loadPersistedDevice() {
     return null;
 }
 
+/** 设备池容量上限（参考 zfdang #108）：保留最近轮换下来的历史设备（含完整会话） */
+const DEVICE_POOL_LIMIT = 6;
+
+/**
+ * 校验并归一化设备池条目（来自持久化文件）；无效条目返回 null。
+ * 池内历史设备携带完整会话（cookie_jar/统计），切换时无损恢复；
+ * 机型档案缺失或非法时回退默认档案。
+ * @param {unknown} entry - 待校验的池条目
+ * @returns {object|null} 合法的只读设备对象，非法返回 null
+ */
+function parsePoolEntry(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (typeof entry.device_id !== 'string' || !/^\d{10,30}$/.test(entry.device_id)) return null;
+    if (typeof entry.iid !== 'string' && !/^\d{10,30}$/.test(String(entry.iid ?? ''))) return null;
+    const iid = String(entry.iid ?? '');
+    if (!/^\d{10,30}$/.test(iid) || !entry.cdid) return null;
+    return Object.freeze({
+        device_id: entry.device_id, iid,
+        cdid: String(entry.cdid),
+        cookie: sanitizeCookie(entry.cookie, iid),
+        profile: normalizeProfile(entry.profile) || DEFAULT_PROFILE,
+        created_at: Number(entry.created_at) || Date.now(),
+        cookie_jar: entry.cookie_jar,
+        session: entry.session && typeof entry.session === 'object' ? entry.session : {},
+    });
+}
+
+/** 从本地文件读取设备池（无效/缺失返回空数组；旧格式文件无 pool 字段自动兼容） */
+function loadPersistedPool() {
+    try {
+        const saved = JSON.parse(fs.readFileSync(identityFilePath(), 'utf8'));
+        return Array.isArray(saved?.pool) ? saved.pool.map(parsePoolEntry).filter(Boolean) : [];
+    } catch {
+        return [];
+    }
+}
+
 /**
  * 将注册成功的设备凭据写入本地文件（同一设备保留 last_play_ok 健康度；失败仅记录警告，不阻断播放）。
  * demo 重构加固：临时文件 + rename 原子写，避免半写文件损坏身份；会话（cookie_jar/session）随身份落盘。
  * @param {Object} device - 设备身份（device_id/iid/cdid/cookie/profile/cookie_jar/session/created_at）
  * @param {boolean} [strict=false] - true 时写盘失败向外抛出（设备轮换场景要求落盘成功）
+ * @param {Array} [pool=[]] - 设备池快照（历史轮换设备，随身份一并落盘）
  * @throws {Error} strict=true 且写盘失败时抛出原始错误
  */
-function persistDevice(device, strict = false) {
+function persistDevice(device, strict = false, pool = []) {
     try {
         fs.mkdirSync(path.dirname(identityFilePath()), { recursive: true });
         // 同一设备重复落盘时保留既有健康度时间戳（换设备则不保留，健康度属于设备而非主机）
@@ -188,6 +226,7 @@ function persistDevice(device, strict = false) {
             ...(device.cookie_jar ? { cookie_jar: device.cookie_jar } : {}),
             ...(device.session && typeof device.session === 'object' ? { session: device.session } : {}),
             ...(lastPlayOk ? { last_play_ok: lastPlayOk } : {}),
+            ...(Array.isArray(pool) && pool.length ? { pool } : {}),
         }, null, 2);
         const tmpPath = `${identityFilePath()}.tmp.${Date.now()}`;
         fs.writeFileSync(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
@@ -289,6 +328,8 @@ function createPlaybackDeviceRegistrar(options = {}) {
     let currentDevice;
     /** 会话 CookieJar（demo 重构新增）：懒创建，随身份/响应持续维护 */
     let jar;
+    /** 设备池（参考 zfdang #108）：历史轮换设备（含完整会话），被风控时优先切换而非重新注册 */
+    let devicePool = [];
     /** 设备轮换 promise（rotateDevice 进行中标记，并发轮换共享） */
     let rotation;
     /** 会话落盘节流时间戳 */
@@ -308,7 +349,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
      */
     const saveSession = (force = false) => {
         if (persist && currentDevice && (force || Date.now() - lastSavedAt >= 30000)) {
-            persistDevice(currentDevice);
+            persistDevice(currentDevice, false, devicePool);
             lastSavedAt = Date.now();
         }
     };
@@ -320,6 +361,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
         if (currentDevice) return Promise.resolve(currentDevice);
         if (persist) {
             const loaded = loadPersistedDevice();
+            devicePool = loadPersistedPool();
             if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
                 currentDevice = loaded;
                 logger.info('PlaybackDevice', `复用播放设备: device_id=${loaded.device_id}, iid=${loaded.iid}`);
@@ -375,7 +417,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
                     jar = initialJar;
                     currentDevice = Object.freeze({ ...device, cookie_jar: jar.serializeSync(), session: { cookie_updated_at: Date.now() } });
                     if (persist) {
-                        persistDevice(currentDevice);
+                        persistDevice(currentDevice, false, devicePool);
                     }
                     // 触发注册成功钩子（行为预热）：尽力而为，不阻塞、不抛错
                     if (typeof registrationHook === 'function') {
@@ -412,6 +454,7 @@ function createPlaybackDeviceRegistrar(options = {}) {
         if (currentDevice) return currentDevice;
         if (persist) {
             const loaded = loadPersistedDevice();
+            devicePool = devicePool.length ? devicePool : loadPersistedPool();
             if (loaded && loaded.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
                 currentDevice = loaded;
                 return currentDevice;
@@ -509,28 +552,69 @@ function createPlaybackDeviceRegistrar(options = {}) {
                 logger.info('PlaybackDevice', '收到用户主动更换设备指令，开始注册全新的独立匿名设备...');
                 const candidate = createPlaybackDeviceRegistrar({ persist: false, fallback: false });
                 const newDevice = await candidate(requestJson);
+                // 换下的旧设备入池保留（参考 zfdang #108）：可能带有成功取流历史，
+                // 风控窗口过后是比全新设备可信得多的轮换候选，不直接丢弃
+                if (currentDevice && currentDevice.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
+                    devicePool = [{ ...currentDevice }, ...devicePool.filter(d => d.device_id !== currentDevice.device_id)];
+                    while (devicePool.length > DEVICE_POOL_LIMIT) devicePool.pop();
+                }
                 currentDevice = newDevice;
                 jar = undefined;
                 registration = undefined;
                 request = undefined;
                 if (persist) {
-                    persistDevice(newDevice, true);
+                    persistDevice(newDevice, true, devicePool);
                 }
                 return newDevice;
             })().finally(() => { rotation = undefined; });
         }
         return waitForRegistration(rotation, signal);
     };
+    /**
+     * 设备池轮换（参考 zfdang #108）：被风控时优先切换到"有成功取流历史"的池内老设备
+     * （上游已信任过的身份，cookie/统计随池条目无损恢复），零注册配额消耗；
+     * 当前设备（非基准）换下入池保留。无合格候选时返回 null（调用方走全新注册阶梯）。
+     * @returns {Object|null} 轮换后的当前设备；池空/无候选时 null
+     */
+    registrar.rotateToPooledDevice = function rotateToPooledDevice() {
+        if (!persist) return null;
+        // 仅轮换到历史上成功取过流（last_success_at>0）的设备，按最近成功时间降序选择
+        const candidates = devicePool
+            .filter(d => Number(d.session?.last_success_at) > 0)
+            .sort((a, b) => Number(b.session?.last_success_at) - Number(a.session?.last_success_at));
+        if (!candidates.length) return null;
+        const pick = candidates[0];
+        logger.info('PlaybackDevice',
+            `设备池轮换: 换出 device_id=${currentDevice?.device_id ?? '无'}, 切入 device_id=${pick.device_id}（历史成功取流 ${new Date(Number(pick.session.last_success_at)).toISOString()}）`);
+        // 当前设备换下入池（基准设备不入池，避免占位）
+        if (currentDevice && currentDevice.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
+            devicePool = [{ ...currentDevice }, ...devicePool.filter(d => d.device_id !== currentDevice.device_id)];
+            while (devicePool.length > DEVICE_POOL_LIMIT) devicePool.pop();
+        }
+        devicePool = devicePool.filter(d => d.device_id !== pick.device_id);
+        currentDevice = Object.freeze({ ...pick, cookie_jar: pick.cookie_jar });
+        jar = undefined;
+        registration = undefined;
+        request = undefined;
+        persistDevice(currentDevice, false, devicePool);
+        return currentDevice;
+    };
     /** 主备通道均空响应时的兜底（PR#92）：回退到内置基准设备并持久化；
      *  基准设备为实测可用身份，切换不消耗注册配额、不触发风控。
-     *  同时作废会话 Jar（demo 重构）：下次请求按基准设备 cookie 重建。 */
+     *  同时作废会话 Jar（demo 重构）：下次请求按基准设备 cookie 重建。
+     *  被换下的当前设备入池保留（参考 zfdang #108），供设备池轮换复用。 */
     registrar.fallbackToDefault = function fallbackToDefault() {
+        // 当前独立设备入池（基准设备自身无需入池）
+        if (currentDevice && currentDevice.device_id !== DEFAULT_VERIFIED_DEVICE.device_id) {
+            devicePool = [{ ...currentDevice }, ...devicePool.filter(d => d.device_id !== currentDevice.device_id)];
+            while (devicePool.length > DEVICE_POOL_LIMIT) devicePool.pop();
+        }
         currentDevice = DEFAULT_VERIFIED_DEVICE;
         jar = undefined;
         registration = undefined;
         request = undefined;
         if (persist) {
-            persistDevice(DEFAULT_VERIFIED_DEVICE);
+            persistDevice(DEFAULT_VERIFIED_DEVICE, false, devicePool);
         }
         logger.info('PlaybackDevice', `已自动切换并持久化基准播放设备: device_id=${currentDevice.device_id}`);
         return currentDevice;

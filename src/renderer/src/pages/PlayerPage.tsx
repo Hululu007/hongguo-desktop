@@ -217,8 +217,6 @@ export function PlayerPage() {
 
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(true);
-  /** 缓冲圈延迟显示：短暂缓冲（含自动连播切集）不满 1s 不闪加载圈（参考 hongguoTV dc67a87b） */
-  const [showSpinner, setShowSpinner] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [buffered, setBuffered] = useState(0);
@@ -241,6 +239,14 @@ export function PlayerPage() {
   const [pinned, setPinned] = useState(false);
   /** 即将进入下一集提示（剩余播放时间 ≤3s 时显示） */
   const [nextTip, setNextTip] = useState(false);
+  // ===== 自适应切集预加载时机：实测上次"切集起点 → 起播成功"耗时 n（秒），
+  // 预取触发阈值 = min(max(n + 3, 3), 视频时长一半)，每次切集后用新实测值滚动更新 =====
+  /** 上次实测切集耗时（秒），初值 3s 与原固定提前量一致 */
+  const loadSecsRef = useRef(3);
+  /** 本次切集/首载起点时间戳（视频源挂载时记录，起播成功时结算） */
+  const switchStartRef = useRef(0);
+  /** 已预取的分集 id（防止时间更新事件重复触发预取；切集后复位允许下一集预取） */
+  const preloadedRef = useRef('');
 
   // ===== 弹幕状态（vendor Danmaku 2.0.10 MIT，media 引擎跟随视频时间轴） =====
   const [dmPrefs, setDmPrefs] = useState<DanmakuPrefs>(() => readDanmakuPrefs());
@@ -311,16 +317,6 @@ export function PlayerPage() {
     if (!epOpen) return;
     curEpBtnRef.current?.scrollIntoView({ block: 'center' });
   }, [epOpen, itemId]);
-
-  // ===== 缓冲圈延迟显示：进入缓冲 1s 后仍未就绪才显示，短暂缓冲不闪圈 =====
-  useEffect(() => {
-    if (!buffering) {
-      setShowSpinner(false);
-      return;
-    }
-    const timer = setTimeout(() => setShowSpinner(true), 1000);
-    return () => clearTimeout(timer);
-  }, [buffering]);
 
   // ===== 视频直链（随集切换；force 跳过主进程缓存重取） =====
   const retryRef = useRef(0);
@@ -436,6 +432,9 @@ export function PlayerPage() {
     const v = videoRef.current;
     if (!v || !videoUrl) return;
     setBuffering(true);
+    // 新源挂载 = 切集/首载起点：供自适应预加载结算实测耗时；复位预取标记允许下一集预取
+    switchStartRef.current = Date.now();
+    preloadedRef.current = '';
     hlsRef.current?.destroy();
     hlsRef.current = null;
 
@@ -876,11 +875,8 @@ export function PlayerPage() {
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
 
-  // ===== 下一集预加载（无感切换）："即将播放"提示出现（剩余 ≤3s）时后台整集预解密下一集，
+  // ===== 下一集预加载（无感切换，自适应时机）：由 onTime 按剩余时间触发后台整集预解密，
   // 切集时主进程命中完整内存缓存直接进入缓冲播放，消除切集卡顿缓冲。幂等，重复触发自动跳过
-  useEffect(() => {
-    if (nextTip && nextEp?.id) void api.streamPrefetch(nextEp.id, hevcSupportedRef.current).catch(() => { });
-  }, [nextTip, nextEp]);
 
   // ===== video 事件（JSX 里绑定的小工具） =====
   const onTime = () => {
@@ -888,8 +884,17 @@ export function PlayerPage() {
     if (!v) return;
     setCur(v.currentTime);
     if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1));
-    // 即将进入下一集提示：剩余 ≤3s 且有下一集时显示（切集后新视频 currentTime 从 0 起，自然复位）
     const remain = Number.isFinite(v.duration) ? v.duration - v.currentTime : Infinity;
+    // 自适应预取窗口：剩余 ≤ min(max(n+3, 3), 时长/2) 时预取下一集
+    //（n 为上次实测切集耗时；时长一半作为上限，超短集最多提前到半集处触发）
+    if (nextEp?.id && remain > 0) {
+      const preloadAhead = Math.min(Math.max(loadSecsRef.current + 3, NEXT_TIP_SECONDS), Math.max(v.duration / 2, 0));
+      if (remain <= preloadAhead && preloadedRef.current !== nextEp.id) {
+        preloadedRef.current = nextEp.id;
+        void api.streamPrefetch(nextEp.id, hevcSupportedRef.current).catch(() => { });
+      }
+    }
+    // 即将进入下一集提示：剩余 ≤3s 且有下一集时显示（切集后新视频 currentTime 从 0 起，自然复位）
     setNextTip(Boolean(nextEp) && remain > 0 && remain <= NEXT_TIP_SECONDS);
   };
 
@@ -971,6 +976,12 @@ export function PlayerPage() {
         onPlaying={() => {
           setBuffering(false);
           retryRef.current = 0; // 起播成功，重置重试计数
+          // 自适应预加载结算：本次"切集起点 → 起播成功"耗时 n（秒，限幅 1~15），
+          // 作为下一集预取触发阈值（n+3）的依据；普通暂停恢复不计时（起点已在结算后清零）
+          if (switchStartRef.current > 0) {
+            loadSecsRef.current = Math.min(Math.max((Date.now() - switchStartRef.current) / 1000, 1), 15);
+            switchStartRef.current = 0;
+          }
         }}
         onCanPlay={() => setBuffering(false)}
         onError={handleVideoError}
@@ -995,7 +1006,7 @@ export function PlayerPage() {
       />
 
       {/* 遮罩层 */}
-      {resolving || (showSpinner && !playErr) ? (
+      {resolving || (buffering && !playErr) ? (
         <div className="player-mask">
           <div className="player-spinner" />
           <p>{resolving ? '正在解析视频地址…' : '加载中…'}</p>

@@ -325,7 +325,8 @@ let deviceProvenGood = false;
  * 任务内部阶梯（本机自研，叠加于多端点阶梯之上）：
  * ① 当前设备全阶梯（空响应时叠加 video_tab 同身份 GET 兜底一次，参考 478f006）
  * → ② 新注册设备同步窗口重试 → ③ 非基准设备切基准重试（任务 53）
- * → ④ 注册全新匿名设备重试（任务 53 实测可恢复）。
+ * → ④ 设备池轮换重试（任务 74，参考 zfdang #108：空响应场景切历史可用设备，5 分钟防风暴）
+ * → ⑤ 注册全新匿名设备重试（任务 53 实测可恢复）。
  * 业务码 10001/10002/110001（参考 14771e0）视为设备身份被拒，走阶梯下一轮换设备；
  * 上游显式限流（Retry-After，参考 478f006）直接终止本轮，不换设备不烧注册配额。
  * @param {string} vid - 分集编号
@@ -335,6 +336,11 @@ let deviceProvenGood = false;
  * @returns {Promise<Object>} 上游分集条目（含 video_model）
  * @throws {Error} 三轮设备阶梯耗尽后上抛 lastError 或 MISSING_MODEL
  */
+/** 设备池轮换防风暴间隔（任务 74，参考 zfdang #108）：5 分钟内最多自动轮换一次 */
+const POOL_ROTATE_GUARD_MS = 5 * 60 * 1000;
+/** 上次设备池轮换时间戳 */
+let lastPoolRotateAt = 0;
+
 async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
     if (refresh) {
         entryCache.delete(vid);
@@ -428,10 +434,27 @@ async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
             result = await runDeviceSteps(getPlaybackDevice.fallbackToDefault(), { singleStep: true, syncRetry: false });
         }
         if (!result.response && result.allEmpty) {
+            // 设备池轮换（参考 zfdang #108）：空响应场景下，切到"有成功取流历史"的池内
+            // 老设备（上游已信任过的身份，cookie/统计随池无损恢复）比注册全新设备可靠
+            // 且零注册配额；5 分钟内最多轮换一次防连环失败风暴。切到池设备后单步重试一次。
+            // 业务码拒绝 / 限流等非空响应错误不进入此分支，走原有阶梯。
+            if (result.lastError?.code === 'EMPTY_RESPONSE'
+                && Date.now() - lastPoolRotateAt >= POOL_ROTATE_GUARD_MS) {
+                lastPoolRotateAt = Date.now();
+                let pooled = null;
+                try { pooled = getPlaybackDevice.rotateToPooledDevice?.() || null; } catch { pooled = null; }
+                if (pooled) {
+                    logger.warn('AppSource', `设备池轮换成功，以历史可用设备重试: device_id=…${String(pooled.device_id).slice(-6)}`);
+                    result = await runDeviceSteps(pooled, { singleStep: true, syncRetry: false });
+                }
+            }
+        }
+        if (!result.response && result.allEmpty) {
             // 任务 53：终局恢复——注册全新匿名设备再试一轮（实测可恢复）。
             // 任务 63：换机上限于 2 台（对齐 openhongguo defaultDeviceResets=2），
             // 当前设备 + 基准设备已构成 2 轮，注册新设备为最后一轮；仍空响应则直接报错，
             // 不再无限轮换烧注册配额与请求量。
+            // 任务 74：被换下的设备进入设备池保留（含完整会话），之后可经设备池轮换复用
             let fresh = null;
             try {
                 fresh = await getPlaybackDevice.rotateDevice(execRequestJson, internalSignal);
