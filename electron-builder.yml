@@ -46,7 +46,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   shortcutName: 黑果短剧
-  artifactName: 黑果短剧-Setup-${version}.${ext}
+  # 产物名必须纯 ASCII：中文会被 electron-builder 清洗为包名形式（@hongguo.desktop-…），
+  # 且 latest.yml 中会残留原始 `${name}` 的斜杠形态（@hongguo/desktop-…），与上传资产不一致
+  # → 自动更新下载 404（v1.4.4 实测踩坑）。ASCII 名保证 yml url 与资产名完全一致
+  artifactName: hongguo-Setup-${version}.${ext}
 
 portable:
-  artifactName: 黑果短剧-便携版-${version}.${ext}
+  artifactName: hongguo-Portable-${version}.${ext}
