@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import { join } from 'path';
 
 /**
@@ -17,7 +17,11 @@ export function getPlayerWindow(): BrowserWindow | null {
 }
 
 export function createPlayerWindow(seriesId: string, itemId: string): void {
+  // 单例已存在：播放窗口可能被老板键等隐藏——先恢复显示再聚焦（任务 72），
+  // 避免对隐藏窗口 focus() 无效导致"点击播放无反应"
   if (playerWin && !playerWin.isDestroyed()) {
+    if (playerWin.isMinimized()) playerWin.restore();
+    if (!playerWin.isVisible()) playerWin.show();
     playerWin.focus();
     playerWin.webContents.send('player:open', { seriesId, itemId });
     return;
@@ -31,7 +35,8 @@ export function createPlayerWindow(seriesId: string, itemId: string): void {
     frame: false, // 无边框：标题由播放器顶部栏自己画（可拖拽 + 关闭按钮）
     backgroundColor: '#000000',
     show: false,
-    title: '黑果短剧 · 播放',
+    // 任务栏显示名称与主窗口统一（黑果短剧桌面版 vN.n.n）
+    title: `黑果短剧桌面版 v${app.getVersion()}`,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

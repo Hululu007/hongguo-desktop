@@ -30,9 +30,6 @@ type SectionKey = (typeof SECTIONS)[number]['key'];
 const fillStyle = (v: number): CSSProperties =>
   ({ '--fill': `${Math.round(v * 100)}%` }) as CSSProperties;
 
-/** 参考项目（本项目的协议分析与整体思路来源，AGPL-3.0 同源） */
-const UPSTREAM_URL = 'https://github.com/zfdang/hongguo-open-player';
-
 /**
  * 设置页：左侧索引 + 右侧设置内容区。
  * 分组：播放器（连播/进度/倍速）、弹幕（与播放器控制栏同源偏好）、应用（自启动）、关于。
@@ -86,9 +83,7 @@ export function SettingsPage() {
         s.bps > 0 ? `（${(s.bps / 1048576).toFixed(1)} MB/s）` : ''}`;
       case 'downloaded': return `v${s.version} 下载完成，正在重启安装…`;
       case 'error': return `上次检查失败：${s.error || '未知原因'}`;
-      case 'idle': return settings.autoUpdate !== false
-        ? `当前已是最新版本（v${appVersion}）；启动时与每 6 小时自动检查一次，发现更新会询问是否升级`
-        : `当前版本 v${appVersion}；自动更新已关闭，可点击「检查更新」手动检查`;
+      case 'idle': return `当前已是最新版本（v${appVersion}）`;
       default: return '';
     }
   })();
@@ -487,7 +482,7 @@ export function SettingsPage() {
                 )}
               </div>
               <div className="setting-row">
-                <div>定位</div>
+                <div>项目介绍</div>
                 <div style={{ color: 'var(--text-tertiary)', maxWidth: 560 }}>
                   红果短剧（hongguoduanju.com）的第三方桌面客户端：浏览 / 分类 / 榜单 / 搜索 /
                   智能推荐、独立沉浸式播放器与弹幕，收藏与观看进度本地持久化。
@@ -496,26 +491,7 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>开源协议</div>
                 <div style={{ color: 'var(--text-tertiary)' }}>
-                  AGPL-3.0（与参考项目一致）
-                </div>
-              </div>
-              <div className="setting-row" style={{ alignItems: 'flex-start' }}>
-                <div style={{ maxWidth: 560 }}>
-                  致谢
-                  <div className="hint" style={{ lineHeight: 1.7 }}>
-                    本项目的接口协议分析与实现思路参考了开源项目{' '}
-                    <a
-                      href={UPSTREAM_URL}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        void api.app.openExternal(UPSTREAM_URL);
-                      }}
-                      style={{ color: 'var(--accent, #ff4d6a)' }}
-                    >
-                      zfdang/hongguo-open-player
-                    </a>
-                    ，感谢原作者的出色工作。
-                  </div>
+                  AGPL-3.0（https://github.com/legend0/hongguo-desktop）
                 </div>
               </div>
               <div className="setting-row" style={{ alignItems: 'flex-start' }}>

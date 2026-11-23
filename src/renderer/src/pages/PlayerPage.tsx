@@ -217,6 +217,8 @@ export function PlayerPage() {
 
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(true);
+  /** 缓冲圈延迟显示：短暂缓冲（含自动连播切集）不满 1s 不闪加载圈（参考 hongguoTV dc67a87b） */
+  const [showSpinner, setShowSpinner] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [buffered, setBuffered] = useState(0);
@@ -309,6 +311,16 @@ export function PlayerPage() {
     if (!epOpen) return;
     curEpBtnRef.current?.scrollIntoView({ block: 'center' });
   }, [epOpen, itemId]);
+
+  // ===== 缓冲圈延迟显示：进入缓冲 1s 后仍未就绪才显示，短暂缓冲不闪圈 =====
+  useEffect(() => {
+    if (!buffering) {
+      setShowSpinner(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowSpinner(true), 1000);
+    return () => clearTimeout(timer);
+  }, [buffering]);
 
   // ===== 视频直链（随集切换；force 跳过主进程缓存重取） =====
   const retryRef = useRef(0);
@@ -983,7 +995,7 @@ export function PlayerPage() {
       />
 
       {/* 遮罩层 */}
-      {resolving || (buffering && !playErr) ? (
+      {resolving || (showSpinner && !playErr) ? (
         <div className="player-mask">
           <div className="player-spinner" />
           <p>{resolving ? '正在解析视频地址…' : '加载中…'}</p>

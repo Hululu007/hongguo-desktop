@@ -8,6 +8,7 @@ const { getPlaybackDevice, DEFAULT_VERIFIED_DEVICE } = require('../native/playba
 const loginState = require('../native/login-state');
 const { deviceKey } = require('../native/device-session');
 const { playbackRequestV5, videoTabRequest, shortplayRequest, SHORTPLAY_APIS } = require('./requests');
+const { H264_CODECS, HEVC_CODECS, BYTEVC2_CODECS } = require('./entry');
 
 // 播放端点阶梯（5 通道，按序尝试；偏好路由记忆该设备上次成功通道）
 // PR#92：播放域主通道迁移至 reading.snssdk.com（multi_video_model/player/v1）
@@ -235,6 +236,60 @@ async function tryVideoTabFallback(vid, device, execRequestJson, deadline, signa
     }
 }
 
+/**
+ * 判断分集条目的 video_model 是否为 ByteVC2 编码专属：
+ * 含 ByteVC2 档位且无任何 H264 / HEVC 档位（fallback_api 外链形态编码未知，不判定）。
+ * @param {Object} entry - 上游分集条目（含 video_model）
+ * @returns {boolean} ByteVC2 专属返回 true
+ */
+function isBytevc2OnlyModel(entry) {
+    try {
+        const raw = entry?.video_model;
+        const model = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const list = Array.isArray(model?.video_list) ? Object.values(model.video_list) : [];
+        const codecs = list.map(item => String(item?.codec_type || item?.video_meta?.codec_type || '').toLowerCase());
+        if (!codecs.length) return false;
+        return codecs.some(codec => BYTEVC2_CODECS.includes(codec))
+            && !codecs.some(codec => H264_CODECS.includes(codec) || HEVC_CODECS.includes(codec));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * ByteVC2 专属兜底重取（参考 hongguoTV ac3a1e2e / v0.16.13）：
+ * video_tab 兜底常返回 ByteVC2 专属编码模型（电视端无法解码）；桌面端虽有 ffmpeg 转码
+ * 通道但成本高——此场景下用同身份对备用域名（sinfonlineb，播放域未用过的集群）重取一次
+ * 移动端 multi_video_model，若返回含 H264/HEVC 可直解/硬解档位的条目则替代使用；
+ * 失败（网络/业务码/结构不符/仍为 ByteVC2 专属）返回 null 沿用 video_tab 模型。
+ * 任务 63 风暴治理约束：仅在"阶梯全空 + video_tab 兜底且 ByteVC2 专属"的窄场景多 1 个请求。
+ * @param {string} vid - 当前分集编号
+ * @param {string} payload - 播放业务 JSON 请求体（与主阶梯一致）
+ * @param {Object} device - 当前注册设备身份
+ * @param {Function} execRequestJson - 传输层执行器
+ * @param {number} deadline - 取址截止时间戳（毫秒）
+ * @param {AbortSignal} signal - 中止信号
+ * @returns {Promise<Object|null>} 重取成功返回播放阶梯统一响应形态，失败返回 null
+ * @throws {Error} 上游显式限流（RATE_LIMITED）时上抛
+ */
+async function retryMultiModelAlternateHost(vid, payload, device, execRequestJson, deadline, signal) {
+    try {
+        const signed = playbackRequestV5(payload, device,
+            'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1');
+        const resp = await execRequestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
+        if (Number(resp?.Code || resp?.code || 0) !== 0) return null;
+        const dataEntries = resp?.data?.['1004'] || resp?.data;
+        const entry = dataEntries?.[vid];
+        if (!entry?.video_model || isBytevc2OnlyModel(entry)) return null;
+        logger.info('AppSource', '备用域名重取到含 H264/HEVC 档位的模型，替代 video_tab 的 ByteVC2 专属模型');
+        return resp;
+    } catch (err) {
+        if (err.code === 'RATE_LIMITED') throw err;
+        logger.warn('AppSource', `备用域名重取未取到兼容模型（${err?.code || err?.message || '未知错误'}），沿用 video_tab 模型...`);
+        return null;
+    }
+}
+
 /** 等待在途取址任务完成（跟随调用方 signal 中止；最后一个等待者被中止时取消任务本身） */
 function waitForInFlightEntry(job, signal) {
     if (!signal) return job.promise;
@@ -352,8 +407,17 @@ async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
         if (!result.response && result.allEmpty) {
             const tabResp = await tryVideoTabFallback(vid, device, execRequestJson, deadline, internalSignal);
             if (tabResp) {
-                cacheResponseEntries(tabResp);
-                result = { response: tabResp, allEmpty: false };
+                // ByteVC2 专属兜底重取（参考 ac3a1e2e / v0.16.13）：tab 模型仅含 ByteVC2 时，
+                // 同身份对备用域名重取一次移动端模型；成功则替代，失败沿用 tab 模型
+                //（桌面端仍可 ffmpeg 转码 ByteVC2，不因重取失败而失去兜底）
+                let finalResp = tabResp;
+                const tabEntry = tabResp.data?.[vid];
+                if (isBytevc2OnlyModel(tabEntry)) {
+                    const altResp = await retryMultiModelAlternateHost(vid, payload, device, execRequestJson, deadline, internalSignal);
+                    if (altResp) finalResp = altResp;
+                }
+                cacheResponseEntries(finalResp);
+                result = { response: finalResp, allEmpty: false };
             }
         }
         if (!result.response && result.allEmpty && typeof getPlaybackDevice.fallbackToDefault === 'function'

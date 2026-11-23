@@ -115,7 +115,8 @@ export function createTray(): void {
   if (tray) return;
   try {
     tray = new Tray(trayIconPath());
-    tray.setToolTip('黑果短剧');
+    // 托盘 hover 提示统一展示应用全名 + 版本号
+    tray.setToolTip(`黑果短剧桌面版 v${app.getVersion()}`);
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '显示主窗口', click: () => showMainWindow() },
@@ -133,6 +134,8 @@ export function createTray(): void {
 }
 
 export function createMainWindow(): void {
+  // 任务栏/窗口标题统一展示应用全名 + 版本号（页面 <title> 不覆盖，见下方 page-title-updated 拦截）
+  const appTitle = `黑果短剧桌面版 v${app.getVersion()}`;
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -141,6 +144,7 @@ export function createMainWindow(): void {
     frame: false,
     backgroundColor: '#16161d',
     show: false,
+    title: appTitle,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -148,6 +152,9 @@ export function createMainWindow(): void {
     },
   });
   mainWindow = win;
+
+  // 任务栏显示名称保持「黑果短剧桌面版 vN.n.n」，阻止渲染层 document.title 覆盖
+  win.on('page-title-updated', (e) => e.preventDefault());
 
   win.once('ready-to-show', () => win.show());
   win.on('maximize', () => win.webContents.send('win:maximized-changed', true));

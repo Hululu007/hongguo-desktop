@@ -87,16 +87,24 @@ export function usePagedList<T extends { id: string }, M = unknown>(
   }, [page, loading, loadingMore, hasMore, load]);
 
   /**
-   * 手动重试追加页（列表底部重试按钮）：不受失败冷却限制。
-   * 追加失败时页码已回滚，此处重试请求的正是上次失败的同一页。
+   * 手动重试（列表底部重试按钮）：不受失败冷却限制。
+   * - 会话游标失效（服务端 APP_CURSOR：错误信息含「列表已过期」）→ 整页刷新：
+   *   重试同页永远无游标，回到第 1 页重建会话游标链；
+   * - 其他失败（网络/5xx）→ 追加页已回滚，重试请求的正是上次失败的同一页。
    */
   const retryMore = useCallback(() => {
     if (loading || loadingMore || !hasMore) return;
+    if (typeof error === 'string' && error.includes('列表已过期')) {
+      setPage(1);
+      setHasMore(true);
+      void load(1, true);
+      return;
+    }
     lastFailAtRef.current = 0;
     const next = page + 1;
     setPage(next);
     void load(next, false);
-  }, [page, loading, loadingMore, hasMore, load]);
+  }, [page, loading, loadingMore, hasMore, error, load]);
 
   const reload = useCallback(() => {
     setPage(1);
