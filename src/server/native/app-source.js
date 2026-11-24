@@ -349,6 +349,75 @@ function signedPassportRequest(apiPath, params, identity, form = false) {
     return { method: form ? 'POST' : 'GET', url, headers, body };
 }
 
+// 账号域签名请求（任务 74 自参考项目 zfdang/hongguo-open-player 移植）：登录态 Cookie 由
+// 调用方（native/account.js）自行合并携带，不走 requestJson 的匿名设备 Cookie 注入。
+// 证据：jackotom/hongguo-player account-session.js signedAccountRequest（GET 72232）；
+// N3urda/hongguoTV CloudAccount.kt（带 body 写请求 73932/7.3.9.32，gzip 时加 Content-Encoding）。
+/** 账号域接口白名单：资料/云端记录/书架/互动/预约/进度上报端点，白名单外一律拒绝签名。 */
+const ACCOUNT_API_ALLOWLIST = [
+    '/reading/user/info/v1/',
+    '/reading/bookapi/read_history/list/v1/',
+    '/reading/bookapi/read_progress/list/v1/',
+    '/reading/bookapi/multi-detail/v1/',
+    '/reading/bookapi/bookshelf/video/info/v1/',
+    '/reading/bookapi/bookshelf/video/update/v1/',
+    '/reading/ugc/action/mget/v1/',
+    '/reading/user/subscribe/list/v0/',
+    '/reading/bookapi/search/uncover_subscribe/v1/',
+    '/reading/bookapi/plan/v:version/',
+    '/reading/ugc/action/set/v1/',
+    '/reading/bookapi/read_progress/upload/v1/',
+];
+/**
+ * 构造账号域签名请求（读请求 72232/7.2.2.32 档，写请求 73932/7.3.9.32 档）。
+ * 与搜索/登录域共用 v3 签名机器（branchOf 分支试探 + x-gorgon/x-ladon/x-argus/x-helios/x-medusa），
+ * 仅版本档与设备身份来源不同；登录态 Cookie 不在此处注入，由调用方合并后随请求发送。
+ * @param {string} apiPath - 账号域接口路径（必须命中 ACCOUNT_API_ALLOWLIST 白名单）
+ * @param {Object} values - 业务 query 参数（键值均为字符串）
+ * @param {{device_id: string, iid: string, cdid: string}} identity - 设备身份（播放设备三要素）
+ * @param {{payload?: string|Object|null, gzip?: boolean, host?: string}} [options] - 写请求体
+ *   （原始 JSON 文本或对象；原始文本用于 19 位大整数防精度丢失）、是否 gzip 压缩、上游域名
+ * @returns {{url: string, headers: Object<string,string>, body: Buffer|null}} 签名后请求
+ * @throws {Error} 接口不在白名单、设备身份无效或 128 次签名分支试探未命中时抛出
+ */
+function signedAccountRequest(apiPath, values = {}, identity, { payload = null, gzip = false, host = 'api5-normal-sinfonlinea.fqnovel.com' } = {}) {
+    if (!ACCOUNT_API_ALLOWLIST.includes(apiPath)) throw Object.assign(new Error('不支持的账号接口'), { code: 'APP_INPUT' });
+    if (![identity?.device_id, identity?.iid].every(value => typeof value === 'string' && /^\d{1,30}$/.test(value) && /[1-9]/.test(value))
+        || typeof identity?.cdid !== 'string' || !/^[a-f0-9-]{36}$/i.test(identity.cdid)) {
+        throw Object.assign(new Error('账号请求设备身份无效'), { code: 'APP_INPUT' });
+    }
+    const write = payload !== null;
+    const versionCode = write ? '73932' : '72232';
+    const versionName = write ? '7.3.9.32' : '7.2.2.32';
+    const device = { ...DEVICE, version_code: versionCode, version_name: versionName, manifest_version_code: versionCode,
+        update_version_code: versionCode, pv_player: versionCode, iid: identity.iid, device_id: identity.device_id, cdid: identity.cdid };
+    // payload 允许传原始 JSON 文本：预约 item_id 为 19 位大整数，Number 序列化会丢精度。
+    const body = write ? (gzip ? gzipSync(Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload))) : Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload))) : null;
+    const khronos = Math.floor(Date.now() / 1000), ticketBase = Date.now();
+    let requestTicket = ticketBase, query = '', url = '';
+    for (let n = 0; n < 128; n += 1) {
+        requestTicket = ticketBase + n;
+        query = pythonUrlEncode({ ...values, ...device, ts: String(khronos), _rticket: String(requestTicket) });
+        url = `https://${host}${apiPath}?${query}`;
+        if (branchOf(url, body, khronos) === 0) break;
+        if (n === 127) throw new Error('无法生成账号请求签名');
+    }
+    const headers = {
+        'User-Agent': SEARCH_UA.replace('72232', versionCode), Accept: 'application/json; charset=utf-8,application/x-protobuf',
+        'x-ss-req-ticket': String(requestTicket), 'x-tt-request-tag': 't=0;n=0', 'sdk-version': '2',
+        'passport-sdk-version': '50561', 'x-xs-from-web': '0', 'x-khronos': String(khronos),
+        'x-ladon': be32(khronos).toString('base64'), 'x-argus': le32(khronos).toString('base64'),
+        'x-gorgon': xGorgon(query, body, khronos, Math.floor(Math.random() * 65536)), 'x-helios': helios(khronos),
+        'x-medusa': buildMedusa(url, body, khronos, device), 'x-tt-dt': '',
+    };
+    if (body) {
+        headers['Content-Type'] = 'application/json; charset=utf-8';
+        headers['x-ss-stub'] = md5(body);
+        if (gzip) headers['Content-Encoding'] = 'gzip';
+    }
+    return { url, headers, body };
+}
+
 // 片源解析工具（parseFallback/deriveContentKey/decryptSpadeUrl/checkedUrl）
 // 已随任务 64 迁至 src/server/play/entry.js 与 util.js
 
@@ -503,7 +572,7 @@ module.exports = {
     clearEntryCache: play.clearEntryCache,
     isHevcCodec: play.isHevcCodec,
     shortplayRequest: play.shortplayRequest,
-    signedSearchRequest, signedMetadataRequest, signedPassportRequest, parseSearchInteger,
+    signedSearchRequest, signedMetadataRequest, signedPassportRequest, signedAccountRequest, parseSearchInteger,
     requestJson, playbackRequest, runWarmup,
     SEARCH_API, SEARCH_UA, ORIGINS, PASSPORT_HOST,
 };

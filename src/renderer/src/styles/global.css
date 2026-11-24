@@ -2378,6 +2378,8 @@ textarea:focus-visible {
   background: var(--bg-field);
   text-align: left;
   color: inherit;
+  cursor: pointer;
+  user-select: none;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
     transform var(--dur-fast) var(--ease);
 }
@@ -2438,6 +2440,7 @@ textarea:focus-visible {
   margin-top: 14px;
   display: flex;
   align-items: center;
+  cursor: pointer;
   justify-content: center;
   gap: 7px;
   font-size: 12px;
@@ -2455,6 +2458,7 @@ textarea:focus-visible {
   margin-top: 14px;
   width: 100%;
   height: 34px;
+  cursor: pointer;
   border: none;
   border-radius: var(--radius-control);
   background: transparent;
@@ -3551,4 +3555,134 @@ input[type='range'].hg-range:active::-webkit-slider-thumb {
   max-width: 720px;
 }
 .dt-cast-item { color: inherit; text-decoration: none; }
+
+/* ===== 账号：通用按钮 / 顶栏头像 / 下拉菜单 / 扫码登录弹窗 / 设置页登录卡片 ===== */
+
+/* 通用小按钮（账号卡片与扫码弹窗复用） */
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 16px; border: none; border-radius: var(--radius-control);
+  background: var(--brand); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+  transition: filter var(--dur-fast) ease;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border: 1px solid var(--divider); border-radius: var(--radius-control);
+  background: transparent; color: var(--text-body); font-size: 13px;
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--dur-fast) ease;
+}
+.btn-ghost:hover { background: var(--bg-hover); }
+.btn-ghost:disabled { opacity: 0.5; cursor: default; }
+
+/* 顶栏头像按钮：背景方形圆角，图片圆形居中（图片小于背景） */
+.acct-wrap { position: relative; display: flex; }
+.acct-btn {
+  width: 30px; height: 30px; padding: 0;
+  border-radius: var(--radius-control); overflow: hidden;
+  background: var(--bg-field);
+  display: flex; align-items: center; justify-content: center;
+}
+.acct-avatar { width: 20px; height: 20px; object-fit: cover; display: block; border-radius: 50%; }
+
+/* 已登录下拉菜单 */
+.acct-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; min-width: 220px;
+  background: var(--bg-elevated); border: 1px solid var(--divider);
+  border-radius: var(--radius-control); box-shadow: 0 12px 32px rgba(var(--shadow-rgb), 0.5);
+  padding: 6px; z-index: 60;
+}
+.acct-menu-user {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid var(--divider); margin-bottom: 6px;
+}
+.acct-menu-avatar {
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; overflow: hidden;
+  background: var(--bg-field); color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+}
+.acct-menu-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.acct-menu-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.acct-menu-name {
+  font-size: 13px; font-weight: 600; color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.acct-menu-id { font-size: 11px; color: var(--text-tertiary); }
+.acct-menu-item {
+  display: flex; width: 100%; gap: 8px; align-items: center;
+  padding: 8px 12px; border: none; border-radius: 8px;
+  background: none; color: var(--text-body); font-size: 13px; text-align: left;
+  cursor: pointer; transition: background var(--dur-fast) ease;
+}
+.acct-menu-item:hover { background: var(--bg-hover); }
+.acct-menu-item:disabled { opacity: 0.5; cursor: default; }
+.acct-menu-item.danger { color: var(--brand); }
+
+/* 扫码登录弹窗 */
+.qr-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: var(--overlay); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+}
+.qr-modal {
+  position: relative; width: 320px; padding: 28px 24px 20px; text-align: center;
+  background: var(--bg-panel); border: 1px solid var(--divider);
+  border-radius: var(--radius-hero);
+  box-shadow: 0 24px 60px rgba(var(--shadow-rgb), 0.6);
+}
+.qr-close {
+  position: absolute; top: 12px; right: 12px;
+  width: 26px; height: 26px; padding: 0; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: background var(--dur-fast) ease;
+}
+.qr-close:hover { background: var(--bg-hover); }
+.qr-title { margin: 0 0 6px; font-size: 16px; color: var(--text-primary); }
+.qr-desc { margin: 0 0 16px; font-size: 12px; color: var(--text-secondary); }
+.qr-box {
+  position: relative; width: 200px; height: 200px; margin: 0 auto;
+  border-radius: var(--radius-cover); background: #fff; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+.qr-img { width: 180px; height: 180px; display: block; }
+.qr-mask {
+  position: absolute; inset: 0; padding: 12px; text-align: center;
+  background: rgba(var(--scrim-rgb), 0.75); color: #fff; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+}
+.qr-loading { padding: 0 16px; font-size: 12px; color: var(--text-secondary); }
+.qr-failed {
+  padding: 0 16px; font-size: 12px; color: var(--text-secondary);
+  display: flex; flex-direction: column; gap: 12px; align-items: center;
+}
+.qr-status { margin: 14px 0 0; font-size: 11px; color: var(--text-tertiary); }
+
+/* 倒计时进度条（二维码有效期） */
+.qr-progress {
+  width: 200px; height: 3px; margin: 12px auto 0; border-radius: 2px;
+  background: var(--bg-field); overflow: hidden;
+}
+.qr-progress-fill { display: block; height: 100%; background: var(--brand); transition: width 1s linear; }
+
+/* 过期遮罩：文案 + 刷新按钮 */
+.qr-mask-expired { flex-direction: column; gap: 10px; }
+
+/* 正文内可点击外链（shell.openExternal 系统浏览器打开） */
+.ext-link { color: var(--brand); cursor: pointer; user-select: none; transition: opacity var(--dur-fast) ease; }
+.ext-link:hover { opacity: 0.8; text-decoration: underline; }
+
+/* 设置页登录状态卡片 */
+.acct-card-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.acct-card-user { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.acct-card-avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; overflow: hidden;
+  background: var(--bg-field); color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+}
+.acct-card-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.acct-card-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.acct-card-name { font-size: 14px; font-weight: 600; color: var(--text-primary); }
 

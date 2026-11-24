@@ -38,6 +38,9 @@ function upperHex(data) { return data.toString('hex').toUpperCase(); }
 // ---------- V5Constants.kt ----------
 const V5_MAGIC = Buffer.from('2d4b4fca49750d433fb5ae2c226dcc56', 'hex');
 const V5_LICENSE = '646637794';
+// medusa wire 字段 21：对照 hongguoTV V5Constants.kt（v04.10.03，7.4.5.32 App/SDK 抓包）——
+// 同请求 A/B 实测 377 返回 200/0B 空响应，312 恢复正常（issue #102 样本复现）
+const V5_FIELD21 = 312;
 const V5_SIGN_KEY = Buffer.from(
     'b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d', 'hex');
 const V5_SBOX = Buffer.from(
@@ -313,7 +316,7 @@ function medusaV5(queryString, body, ts, values) {
         [9,0x040a0300,'sint'],[10,flags,'bytes'],[12,ts,'sint'],[13,f13,'bytes'],
         [14,query.subarray(0,6),'bytes'],
         [15,proto([[1,1,'sint'],[2,1,'sint'],[3,1,'sint'],[5,1,'sint']]),'message'],
-        [17,ts,'sint'],[20,'none'],[21,377,'sint'],[23,env,'message'],
+        [17,ts,'sint'],[20,'none'],[21,V5_FIELD21,'sint'],[23,env,'message'],
         [24,'{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}'],
     ]);
     const nonce = rand();
@@ -437,5 +440,5 @@ function signPlaybackV5(base, values, body, now = Date.now()) {
 
 module.exports = {
     hashF13V5, branchV5, AesV3V5, medusaV5, heliosV5, signPlaybackV5, encodeValues,
-    V5_MAGIC, V5_LICENSE, V5_SIGN_KEY, V5_SBOX, HASH_TABLE,
+    V5_MAGIC, V5_LICENSE, V5_FIELD21, V5_SIGN_KEY, V5_SBOX, HASH_TABLE,
 };

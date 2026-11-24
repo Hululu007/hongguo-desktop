@@ -167,6 +167,82 @@ export interface ActorWorksPage {
   total: number;
 }
 
+// ===== 账号（官网扫码登录 + 云同步） =====
+
+/** 当前登录用户资料（来自 /reading/user/info/v1/） */
+export interface AccountUser {
+  /** 用户 id（biz_user_id / user_id_str） */
+  userId: string;
+  /** 昵称（name / screen_name） */
+  name: string;
+  /** 头像 URL（可空，空时渲染层用占位图标） */
+  avatar?: string;
+}
+
+/** 账号登录态概览（account.status） */
+export interface AccountStatus {
+  loggedIn: boolean;
+  user: AccountUser | null;
+  /** 登录态保存时间戳（毫秒，未登录为 null） */
+  savedAt: number | null;
+}
+
+/** 扫码会话（account.loginStart 返回） */
+export interface QrLoginSession {
+  /** 轮询凭据 token（check_qrconnect 用） */
+  token: string;
+  /** 二维码 data URI（PNG） */
+  qrcode: string;
+  /** 有效期秒数（服务端给多少算多少，缺省 60） */
+  expiresInSec: number;
+}
+
+/** 扫码轮询状态：pending 等待 / scanned 已扫 / confirmed 确认 / expired 过期 / canceled 取消 */
+export type QrLoginPollResult = {
+  status: 'pending' | 'scanned' | 'confirmed' | 'expired' | 'canceled';
+  user?: AccountUser;
+};
+
+/** 云端播放进度行（read_progress/list/v1/ 映射后） */
+export interface CloudProgressRow {
+  seriesId: string;
+  vid: string;
+  seriesTitle: string;
+  /** 1 起的分集序号 */
+  vidIndex: number;
+  episodeCnt?: number;
+  /** 当前播放位置（毫秒） */
+  positionMs: number;
+  /** 当前分集总时长（毫秒） */
+  durationMs?: number;
+  /** 最后观看时间戳（毫秒） */
+  lastWatchTime: number;
+  /** 封面（多详情补齐，可空） */
+  coverUrl?: string;
+}
+
+/** 云端收藏行（bookshelf/video/info/v1/ 映射后） */
+export interface CloudFavoriteRow {
+  seriesId: string;
+  title: string;
+  coverUrl?: string;
+  episodeCnt?: number;
+  /** 收藏时间戳（毫秒） */
+  favoritedAt: number;
+}
+
+/** 进度上报入参（秒入参，服务端 ×1000 转 ms；title 仅服务端日志用） */
+export interface ProgressReportInput {
+  seriesId: string;
+  vid: string;
+  /** 1 起的分集序号 */
+  episodeIndex: number;
+  positionSec: number;
+  durationSec?: number;
+  episodeCount?: number;
+  title?: string;
+}
+
 /** 分类页主导航（demo App 端目录协议支持的分类；漫画能力已随旧 scraper 废弃） */
 export const CATEGORY_MAINS: { key: string; label: string }[] = [
   { key: 'real-drama', label: '真人剧' },

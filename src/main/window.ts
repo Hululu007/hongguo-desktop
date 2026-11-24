@@ -120,8 +120,30 @@ export function createTray(): void {
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: '显示主窗口', click: () => showMainWindow() },
+        {
+          // 显示播放器：播放器窗口已存在时恢复并聚焦；尚未打开过则回退显示主窗口
+          label: '显示播放器',
+          click: () => {
+            const player = getPlayerWindow();
+            if (player) {
+              if (player.isMinimized()) player.restore();
+              if (!player.isVisible()) player.show();
+              player.focus();
+            } else {
+              showMainWindow();
+            }
+          },
+        },
         { type: 'separator' },
-        { label: '退出 黑果短剧', click: () => quitApp() },
+        {
+          // 重启应用：relaunch 以新进程拉起同参数实例，再走正常退出流程（will-quit 关闭流端点）
+          label: '重启应用',
+          click: () => {
+            app.relaunch();
+            quitApp();
+          },
+        },
+        { label: '退出应用', click: () => quitApp() },
       ]),
     );
     // Windows 惯例：单击托盘图标恢复窗口

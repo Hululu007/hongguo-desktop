@@ -513,6 +513,121 @@ export function registerIpc(): void {
     if (ticket !== undefined && typeof ticket !== 'string') throw new Error('无效的参数: ticket');
     return hg.login.loginWithCode(mobile, code, ticket ?? '');
   }));
+  // ===== 账号（官网扫码登录 + 账号域云同步）：凭据在 account_session 持久化，
+  // 扫码成功后 Cookie 同步写入 login-state（播放链路自动携带）。
+  // 此处把 server 层 snake_case 返回适配为渲染层 camelCase 契约 =====
+  const acctStr = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const acctUser = (u: unknown): { userId: string; name: string; avatar?: string } | null => {
+    const o = u as Record<string, unknown> | null;
+    if (!o || typeof o !== 'object') return null;
+    const user = { userId: acctStr(o.user_id ?? o.user_id_str), name: acctStr(o.name ?? o.screen_name) };
+    const avatar = acctStr(o.avatar_url ?? o.avatar);
+    return { ...user, ...(avatar ? { avatar } : {}) };
+  };
+  ipcMain.handle('net:account-status', userFacing(async () => {
+    const s = hg.account.status();
+    let user = s.logged_in ? acctUser(s.user) : null;
+    // 登录凭据缓存里没有头像时补拉一次资料（/reading/user/info/v1/）
+    if (user && !user.avatar) {
+      try {
+        const p = await hg.account.profile();
+        if (p?.success && p.user) {
+          const fresh = acctUser(p.user);
+          if (fresh) user = { ...user, name: fresh.name || user.name, ...(fresh.avatar ? { avatar: fresh.avatar } : {}) };
+        }
+      } catch { /* 头像补拉失败不阻塞状态查询 */ }
+    }
+    return { loggedIn: Boolean(s.logged_in), user, savedAt: null };
+  }));
+  ipcMain.handle('net:account-login-start', userFacing(async () => {
+    const s = await hg.account.startLogin();
+    if (!s?.success || !s.token || !s.qrcode) throw new Error(s?.notice || '二维码获取失败，请稍后重试');
+    return {
+      token: s.token,
+      qrcode: s.qrcode,
+      expiresInSec: s.expire_at ? Math.max(20, Math.round((Number(s.expire_at) - Date.now()) / 1000)) : 60,
+    };
+  }));
+  ipcMain.handle('net:account-login-poll', userFacing(async (_e, token: string) => {
+    if (typeof token !== 'string') throw new Error('无效的参数: token');
+    const r = await hg.account.pollLogin(token);
+    if (!r?.success) throw new Error(r?.notice || '扫码状态查询失败，请稍后重试');
+    const status = r.status === 'confirmed' ? 'confirmed'
+      : r.status === 'expired' ? 'expired'
+        : r.scanned ? 'scanned' : 'pending';
+    return { status, user: r.user ? acctUser(r.user) ?? undefined : undefined };
+  }));
+  ipcMain.handle('net:account-logout', userFacing(async () => {
+    const r = await hg.account.logout();
+    return Boolean(r?.success);
+  }));
+  ipcMain.handle('net:account-history', userFacing(async () => {
+    const r = await hg.account.history();
+    if (!r?.success) throw new Error(r?.notice || r?.error || '云端播放进度获取失败');
+    const items = Array.isArray(r.items) ? r.items : [];
+    return items.map((it: Record<string, unknown>) => ({
+      seriesId: acctStr(it.series_id),
+      vid: acctStr(it.vid),
+      seriesTitle: acctStr(it.title),
+      vidIndex: Math.max(1, Number(it.episode_index) || 1),
+      episodeCnt: Number(it.episode_count) || undefined,
+      positionMs: Number(it.position_ms) || 0,
+      durationMs: Number(it.duration_ms) || undefined,
+      lastWatchTime: Number(it.watched_at) || Date.now(),
+      coverUrl: acctStr(it.cover) || undefined,
+    }));
+  }));
+  ipcMain.handle('net:account-favorites', userFacing(async () => {
+    const r = await hg.account.favorites();
+    if (!r?.success) throw new Error(r?.notice || r?.error || '云端收藏获取失败');
+    const items = Array.isArray(r.items) ? r.items : [];
+    return items.map((it: Record<string, unknown>) => ({
+      seriesId: acctStr(it.series_id),
+      title: acctStr(it.title),
+      coverUrl: acctStr(it.cover) || undefined,
+      episodeCnt: Number(it.episode_count) || undefined,
+      favoritedAt: Number(it.favorited_at) || Date.now(),
+    }));
+  }));
+  ipcMain.handle('net:account-favorite-set', userFacing(async (_e, seriesId: string, add: boolean) => {
+    if (typeof seriesId !== 'string' || !seriesId) throw new Error('无效的参数: seriesId');
+    if (typeof add !== 'boolean') throw new Error('无效的参数: add');
+    const r = await hg.account.setFavorite(seriesId, add);
+    // 未登录按 no-op（渲染层无需关心登录态）；真失败上抛中文错误
+    if (!r?.success) {
+      if (r?.need_login) return false;
+      throw new Error(r?.error || '收藏同步失败，请稍后重试');
+    }
+    return true;
+  }));
+  ipcMain.handle('net:account-report-progress', userFacing(async (_e, p: unknown) => {
+    if (!p || typeof p !== 'object') throw new Error('无效的参数: progress');
+    const r = p as Record<string, unknown>;
+    const reqStr = (v: unknown, name: string) => {
+      if (typeof v !== 'string' || !v) throw new Error(`无效的参数: ${name}`);
+      return v;
+    };
+    const reqNum = (v: unknown, name: string) => {
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`无效的参数: ${name}`);
+      return v;
+    };
+    const optNum = (v: unknown, name: string) => {
+      if (v === undefined) return undefined;
+      if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`无效的参数: ${name}`);
+      return v;
+    };
+    const out = await hg.account.reportProgress({
+      seriesId: reqStr(r.seriesId, 'seriesId'),
+      vid: reqStr(r.vid, 'vid'),
+      episodeIndex: reqNum(r.episodeIndex, 'episodeIndex'),
+      positionSec: reqNum(r.positionSec, 'positionSec'),
+      durationSec: optNum(r.durationSec, 'durationSec'),
+      episodeCount: optNum(r.episodeCount, 'episodeCount'),
+    });
+    // 未登录 / 参数无效按 no-op 处理（渲染层无需关心登录态）
+    if (!out?.success) return false;
+    return true;
+  }));
   ipcMain.handle('net:play', userFacing((_e, seriesId: string, itemId: string, force?: boolean, nextVid?: string, allowHevc?: boolean) => {
     if (force !== undefined && typeof force !== 'boolean') throw new Error('无效的参数: force');
     if (nextVid !== undefined && typeof nextVid !== 'string') throw new Error('无效的参数: nextVid');

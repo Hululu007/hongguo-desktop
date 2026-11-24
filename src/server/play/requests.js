@@ -8,15 +8,22 @@ const { PlayerSigner } = require('../native/argus');
 const { signPlaybackV5 } = require('./v5-sign');
 const { pythonUrlEncode } = require('./util');
 
-// v5 播放 query 固定参数：官方 7.4.3.32 vivo 渠道 + PGT-AN10 机型
-// （对照 hongguoTV MobilePlayback.kt；设备三要素 iid/cdid/device_id 由注册身份注入）
+// v5 播放 query 固定参数：官方 7.4.5.32 update_64 渠道 + Redmi 25053RT47C 机型
+// （对照 hongguoTV MobilePlayback.kt currentApp 分支，2026-11 最新 main；
+//  旧 7.4.3.32 vivo/PGT-AN10 player/v1 协议已被上游风控空响应，不再使用）
 const V5_PLAYBACK_QUERY = {
-    aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
-    channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10',
-    os_version: '12', update_version_code: '74332',
+    aid: '8662', app_name: 'novelread', version_code: '74532', version_name: '7.4.5.32',
+    update_version_code: '74532', manifest_version_code: '74532',
+    os: 'android', ssmix: 'a', channel: 'update_64', device_platform: 'android',
+    device_type: '25053RT47C', device_brand: 'Redmi', os_version: '16', os_api: '36',
+    ac: 'wifi', language: 'zh', host_abi: 'arm64-v8a',
 };
-// v5 播放 UA 固定为官方 7.3.9.32 PGT-AN10 档（与 query device_type 同源，指纹一致）
-const V5_PLAYBACK_UA = 'com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)';
+// v5 播放 UA：currentApp 分支使用 Android http.agent（Dalvik 形态），
+// 机型/系统/Build 串与 video_tab UA 同源（25053RT47C / Android 16 / BP2A.250605.031.A3）
+const V5_PLAYBACK_UA = 'Dalvik/2.1.0 (Linux; U; Android 16; 25053RT47C Build/BP2A.250605.031.A3)';
+// video_tab 兜底 UA：官方 7.3.9.32 Cronet 形态，机型/系统随 currentApp 档
+// （对照 hongguoTV MobilePlayback.kt videoTabRequest UA）
+const V5_VIDEO_TAB_UA = 'com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
 
 // 番茄小说客户端短剧接口（aid 1967）：红果播放域全受阻时的降级通道
 const SHORTPLAY_APIS = [
@@ -86,7 +93,8 @@ function videoTabRequest(vid, identity, apiBase = VIDEO_TAB_API) {
     };
     const { url, headers: signedHeaders } = signPlaybackV5(apiBase, values, null);
     const headers = {
-        'User-Agent': V5_PLAYBACK_UA, Accept: 'application/json',
+        'User-Agent': V5_VIDEO_TAB_UA, Accept: 'application/json; charset=utf-8',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
         ...signedHeaders,
     };
     // 设备 Cookie 与登录态合并口径与 playbackRequestV5 一致（同身份同会话）
@@ -143,4 +151,4 @@ function shortplayRequest(vid, identity, apiBase = SHORTPLAY_API) {
     return { url, body, headers };
 }
 
-module.exports = { playbackRequestV5, videoTabRequest, shortplayRequest, V5_PLAYBACK_QUERY, V5_PLAYBACK_UA, SHORTPLAY_APIS, SHORTPLAY_API, VIDEO_TAB_API };
+module.exports = { playbackRequestV5, videoTabRequest, shortplayRequest, V5_PLAYBACK_QUERY, V5_PLAYBACK_UA, V5_VIDEO_TAB_UA, SHORTPLAY_APIS, SHORTPLAY_API, VIDEO_TAB_API };

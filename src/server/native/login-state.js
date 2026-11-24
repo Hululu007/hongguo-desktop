@@ -12,8 +12,9 @@ const logger = require('../services/logger');
 const TOKEN_HEADER_LENGTH = 56;
 /** 纯 x-tt-token 值（base64 系，'=' 仅允许结尾 padding） */
 const TOKEN_PLAIN_RE = /^[A-Za-z0-9+/_=-]+$/;
-/** 整段 Cookie 串字符集（k=v; k=v，sid_guard 含 | 与 GMT 日期含 , : 空格） */
-const TOKEN_COOKIE_RE = /^[A-Za-z0-9+/_=;:,|\-\s]+$/;
+/** 整段 Cookie 串字符集（k=v; k=v，sid_guard 含 | 与 GMT 日期含 , : 空格；
+ *  官网扫码实测：URL 编码值含 %（sid_guard/ttwid/session_tlb_tag），ucp 域名含 .） */
+const TOKEN_COOKIE_RE = /^[A-Za-z0-9+/_=;:,|%.\-\s]+$/;
 
 function tokenFilePath() {
     const dataDir = process.env.HONGGUO_DATA_DIR || path.join(os.tmpdir(), 'hongguo-data');

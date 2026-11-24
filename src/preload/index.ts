@@ -37,6 +37,34 @@ const api = {
   sendLoginCode: (mobile: string) => ipcRenderer.invoke('net:login-send-code', mobile),
   submitLoginCode: (mobile: string, code: string, ticket?: string) =>
     ipcRenderer.invoke('net:login-submit', mobile, code, ticket),
+
+  /** 账号（官网扫码登录 + 账号域云同步）：登录态写 login-state，凭据在主进程持久化 */
+  account: {
+    /** 登录态概览（loggedIn + 用户资料 + 保存时间） */
+    status: () => ipcRenderer.invoke('net:account-status'),
+    /** 获取扫码会话（token + 二维码 data URI + 有效期秒数） */
+    loginStart: () => ipcRenderer.invoke('net:account-login-start'),
+    /** 轮询扫码状态（pending/scanned/confirmed/expired/canceled） */
+    loginPoll: (token: string) => ipcRenderer.invoke('net:account-login-poll', token),
+    /** 退出登录（清除账号凭据与 login-state） */
+    logout: () => ipcRenderer.invoke('net:account-logout'),
+    /** 云端播放进度列表（read_progress，未登录返回空数组） */
+    history: () => ipcRenderer.invoke('net:account-history'),
+    /** 云端收藏列表（视频书架，未登录返回空数组） */
+    favorites: () => ipcRenderer.invoke('net:account-favorites'),
+    /** 收藏写入云端书架（add true 加收藏 / false 取消；未登录 no-op 返回 false） */
+    setFavorite: (seriesId: string, add: boolean) => ipcRenderer.invoke('net:account-favorite-set', seriesId, add),
+    /** 播放进度上报（秒入参；未登录服务端 no-op 返回 false） */
+    reportProgress: (p: {
+      seriesId: string;
+      vid: string;
+      episodeIndex: number;
+      positionSec: number;
+      durationSec?: number;
+      episodeCount?: number;
+      title?: string;
+    }) => ipcRenderer.invoke('net:account-report-progress', p),
+  },
   /** 弹幕（官方签名接口，服务层自带缓存/去重/护栏；fresh=true 绕过失败缓存重试） */
   getDanmaku: (seriesId: string, itemId: string, fresh?: boolean) =>
     ipcRenderer.invoke('net:danmaku', seriesId, itemId, fresh),

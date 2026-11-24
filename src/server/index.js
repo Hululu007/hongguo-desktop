@@ -19,6 +19,8 @@ const logger = require('./services/logger');
 const danmaku = require('./native/danmaku');
 const loginState = require('./native/login-state');
 const login = require('./native/login');
+// 账号服务：导出单例实例（扫码登录/账号域方法挂实例上，参考 hongguo-open-player index.js 用法）
+const account = require('./native/account').getAccountService();
 const createStreamServer = require('./stream-server');
 const { getPlaybackDevice } = require('./native/playback-device');
 const appSource = require('./native/app-source');
@@ -37,4 +39,4 @@ async function resetDevice() {
   return { device_id: device.device_id, iid: device.iid };
 }
 
-module.exports = { dramaService, streamService, storeService, logger, danmaku, loginState, login, createStreamServer, resetDevice };
+module.exports = { dramaService, streamService, storeService, logger, danmaku, loginState, login, account, createStreamServer, resetDevice };

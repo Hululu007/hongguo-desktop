@@ -6,6 +6,8 @@ import { settingsStore, useSettings, type ThemeMode } from '../stores';
 import { nextThemeMode } from '../hooks/useTheme';
 import { useSearchHistory } from '../stores';
 import { requestClose } from './CloseConfirmModal';
+import { AccountButton } from './AccountButton';
+import { LoginModal } from './LoginModal';
 import type { SearchSuggestion } from '../types';
 import {
   IconSearch,
@@ -324,6 +326,8 @@ export function Topbar() {
         <button className="tb-icon" title="设置" aria-label="设置" onClick={() => navigate('/settings')}>
           <IconGear size={16} />
         </button>
+        {/* 用户头像（未登录点击扫码登录 / 已登录点击下拉菜单）；弹窗挂在本组件尾部 */}
+        <AccountButton />
         <i className="tb-sep" />
         <button
           className="tb-icon"
@@ -345,6 +349,9 @@ export function Topbar() {
           <IconClose size={14} />
         </button>
       </div>
+
+      {/* 扫码登录弹窗（全局入口：顶栏头像 / 设置页登录卡片） */}
+      <LoginModal />
     </div>
   );
 }

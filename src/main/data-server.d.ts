@@ -160,6 +160,29 @@ declare module '@hongguo/server' {
       sendSmsCode(mobile: string): Promise<{ mobile: string; mobileTicket: string }>;
       loginWithCode(mobile: string, code: string, mobileTicket?: string): Promise<{ token: string; savedAt: number; endpoint: string; steps?: unknown[] }>;
     };
+    /** 账号服务（官网扫码登录 + 账号域云同步，native/account.js）：snake_case 原始结构 */
+    account: {
+      /** 发起扫码登录：申请二维码（get_qrcode） */
+      startLogin(): Promise<{ success: boolean; token?: string; qrcode?: string; expire_at?: number; notice: string }>;
+      /** 轮询扫码状态（check_qrconnect → redirect 落 Cookie；status: pending/confirmed/expired，scanned 表已扫） */
+      pollLogin(token: string): Promise<{ success: boolean; status: string; scanned?: boolean; user?: Record<string, unknown>; notice: string }>;
+      /** 退出登录：清除账号凭据（login-state 仅当与账号 Cookie 一致时才清除） */
+      logout(): Promise<{ success: boolean; notice: string }>;
+      /** 登录状态概览（同步方法） */
+      status(): { success: boolean; logged_in: boolean; user: Record<string, unknown> | null; expires_at: number; expired: boolean; storage_encrypted: boolean; notice: string };
+      /** 账号资料（/reading/user/info/v1/，含匿名降级判定） */
+      profile(): Promise<{ success: boolean; anonymous?: boolean; user?: Record<string, unknown>; notice: string }>;
+      /** 云端播放进度（read_progress/list + read_history 兜底 + multi-detail 补剧名） */
+      history(): Promise<{ success: boolean; items?: Record<string, unknown>[]; source?: string; need_login?: boolean; notice: string; error: string }>;
+      /** 书架收藏（bookshelf/video/info/v1/） */
+      favorites(): Promise<{ success: boolean; items?: Record<string, unknown>[]; need_login?: boolean; notice: string; error: string }>;
+      /** 收藏写入（bookshelf/video/update/v1/，video_shelf_operate_type 0=加 1=删；101045=已生效幂等） */
+      setFavorite(seriesId: string, add: boolean): Promise<{ success: boolean; confirmed?: boolean; need_login?: boolean; notice: string; error: string }>;
+      /** 播放进度上报（read_progress/upload，秒入参×1000，book_id/item_id 键名） */
+      reportProgress(input: Record<string, unknown>): Promise<{ success: boolean; need_login?: boolean; error: string }>;
+      /** 是否已登录（jar 含 sessionid） */
+      loggedIn(): boolean;
+    };
     createStreamServer(options?: { streamService?: unknown; port?: number }): Promise<StreamServerHandle>;
     /** 重置播放设备：注册全新匿名设备替换当前身份，并作废旧设备签名的缓存 */
     resetDevice(): Promise<{ device_id: string; iid: string }>;

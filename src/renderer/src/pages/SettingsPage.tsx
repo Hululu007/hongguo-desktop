@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { useSettings } from '../stores';
+import { useSettings, useAccount, accountStore, pullCloudAll, refreshAccountStatus, resetProgressReport } from '../stores';
 import { api } from '../api';
 import { toast } from '../components/Toast';
 import { useUpdaterState } from '../updater';
+import { IconLogout, IconSync, IconUser } from '../components/Icons';
 import {
   DM_PREFS_DEFAULT,
   DM_ROW_OPTIONS,
@@ -18,6 +19,7 @@ const SPEEDS = [1.0, 1.25, 1.5, 2.0];
 
 /** 设置页左侧索引项（锚定右侧对应分组） */
 const SECTIONS = [
+  { key: 'account', label: '登录' },
   { key: 'player', label: '播放器' },
   { key: 'danmaku', label: '弹幕' },
   { key: 'app', label: '应用' },
@@ -36,9 +38,11 @@ const fillStyle = (v: number): CSSProperties =>
  */
 export function SettingsPage() {
   const settings = useSettings();
+  const acct = useAccount();
+  const [syncing, setSyncing] = useState(false);
   const updateState = useUpdaterState();
   const [openAtLogin, setOpenAtLogin] = useState(false);
-  const [active, setActive] = useState<SectionKey>('player');
+  const [active, setActive] = useState<SectionKey>('account');
   const [dmPrefs, setDmPrefs] = useState<DanmakuPrefs>(() => readDanmakuPrefs());
   const [authState, setAuthState] = useState<AuthState>(null);
   const [appVersion, setAppVersion] = useState('…');
@@ -207,6 +211,83 @@ export function SettingsPage() {
         </aside>
 
         <div className="settings-panel">
+          {/* 登录状态卡片（用户要求：设置页顶部，未登录显示默认卡片） */}
+          {active === 'account' ? (
+            <div className="settings-group">
+              <h3>登录状态</h3>
+              {acct.status === 'loggedIn' && acct.user ? (
+                <>
+                  <div className="setting-row acct-card-row">
+                    <div className="acct-card-user">
+                      <span className="acct-card-avatar">
+                        {acct.user.avatar
+                          ? <img src={acct.user.avatar} alt="" referrerPolicy="no-referrer" />
+                          : <IconUser size={20} />}
+                      </span>
+                      <span className="acct-card-meta">
+                        <span className="acct-card-name">{acct.user.name || '红果用户'}</span>
+                        <span className="hint">ID {acct.user.userId || '—'} · 播放进度云端同步已开启</span>
+                      </span>
+                    </div>
+                    <button
+                      className="btn-ghost"
+                      onClick={() => {
+                        if (window.confirm('退出后播放进度将不再云端同步，确定退出？')) {
+                          resetProgressReport();
+                          void api.account.logout()
+                            .then(() => { void refreshAccountStatus(); toast('已退出登录'); })
+                            .catch((e) => toast(`退出失败：${String((e as Error)?.message ?? e)}`));
+                        }
+                      }}
+                    >
+                      <IconLogout size={13} /> 退出登录
+                    </button>
+                  </div>
+                  <div className="setting-row">
+                    <div>
+                      立即同步
+                      <div className="hint">把云端播放进度拉取合并到本机（本机观看自动上报云端）</div>
+                    </div>
+                    <button
+                      className="btn-ghost"
+                      disabled={syncing}
+                      onClick={() => {
+                        setSyncing(true);
+                        pullCloudAll()
+                          .then((r) => {
+                            const parts: string[] = [];
+                            if (r.history > 0) parts.push(`${r.history} 条播放进度`);
+                            if (r.favorites > 0) parts.push(`${r.favorites} 条收藏`);
+                            toast(parts.length > 0 ? `已从云端同步 ${parts.join('、')}` : '云端暂无新内容');
+                          })
+                          .catch((e) => toast(`同步失败：${String((e as Error)?.message ?? e)}`))
+                          .finally(() => setSyncing(false));
+                      }}
+                    >
+                      <IconSync size={13} /> {syncing ? '同步中…' : '同步'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="setting-row acct-card-row">
+                  <div className="acct-card-user">
+                    <span className="acct-card-avatar"><IconUser size={20} /></span>
+                    <span className="acct-card-meta">
+                      <span className="acct-card-name">未登录</span>
+                      <span className="hint">扫码登录红果账号，播放进度可在多设备间同步</span>
+                    </span>
+                  </div>
+                  <button
+                    className="btn-primary"
+                    onClick={() => accountStore.setState({ loginModalOpen: true })}
+                  >
+                    扫码登录
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+
           {active === 'player' ? (
             <div className="settings-group">
               <h3>播放器</h3>
@@ -491,7 +572,18 @@ export function SettingsPage() {
               <div className="setting-row">
                 <div>开源协议</div>
                 <div style={{ color: 'var(--text-tertiary)' }}>
-                  AGPL-3.0（https://github.com/legend0/hongguo-desktop）
+                  AGPL-3.0（
+                  <span
+                    className="ext-link"
+                    title="https://github.com/legend0/hongguo-desktop（点击在浏览器中打开）"
+                    onClick={() => {
+                      void api.app.openExternal('https://github.com/legend0/hongguo-desktop')
+                        .catch((e: unknown) => toast(`打开失败：${String((e as Error)?.message ?? e)}`));
+                    }}
+                  >
+                    GitHub 仓库
+                  </span>
+                  ）
                 </div>
               </div>
               <div className="setting-row" style={{ alignItems: 'flex-start' }}>

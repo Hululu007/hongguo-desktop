@@ -1,11 +1,17 @@
 import type {
+  AccountStatus,
   ActorCard,
   ActorDetail,
   ActorWorksPage,
   CategoryPageResult,
+  CloudFavoriteRow,
+  CloudProgressRow,
   DramaCard,
   DramaDetail,
   HomeSection,
+  ProgressReportInput,
+  QrLoginPollResult,
+  QrLoginSession,
   RankPageResult,
   SearchSuggestion,
   SearchResultPage,
@@ -165,6 +171,27 @@ export const api = {
   submitLoginCode: (mobile: string, code: string, ticket?: string): Promise<{ token: string; savedAt: number; endpoint: string }> =>
     hg.submitLoginCode(mobile, code, ticket),
 
+  // ===== 账号（官网扫码登录 + 云同步） =====
+
+  account: {
+    /** 登录态概览（含用户资料，未登录 user 为 null） */
+    status: (): Promise<AccountStatus> => hg.account.status(),
+    /** 获取扫码会话（token + 二维码 data URI + 有效期秒数） */
+    loginStart: (): Promise<QrLoginSession> => hg.account.loginStart(),
+    /** 轮询扫码状态（2s 一次由渲染层驱动） */
+    loginPoll: (token: string): Promise<QrLoginPollResult> => hg.account.loginPoll(token),
+    /** 退出登录（清除账号凭据与 login-state） */
+    logout: (): Promise<boolean> => hg.account.logout(),
+    /** 云端播放进度列表（未登录返回空数组） */
+    history: (): Promise<CloudProgressRow[]> => hg.account.history(),
+    /** 云端收藏列表（未登录返回空数组） */
+    favorites: (): Promise<CloudFavoriteRow[]> => hg.account.favorites(),
+    /** 收藏写入云端书架（未登录 no-op 返回 false） */
+    setFavorite: (seriesId: string, add: boolean): Promise<boolean> => hg.account.setFavorite(seriesId, add),
+    /** 播放进度上报（秒入参；未登录服务端 no-op 返回 false） */
+    reportProgress: (p: ProgressReportInput): Promise<boolean> => hg.account.reportProgress(p),
+  },
+
   // ===== 剧星榜（演员） =====
 
   /** 剧星榜分页（App 端演员协议；gender: 女演员 female / 男演员 male，缺省全部；rankDate: 榜单统计日期） */
@@ -265,6 +292,16 @@ declare global {
       clearAuthToken(): Promise<boolean>;
       sendLoginCode(mobile: string): Promise<{ mobile: string; mobileTicket: string }>;
       submitLoginCode(mobile: string, code: string, ticket?: string): Promise<{ token: string; savedAt: number; endpoint: string }>;
+      account: {
+        status(): Promise<AccountStatus>;
+        loginStart(): Promise<QrLoginSession>;
+        loginPoll(token: string): Promise<QrLoginPollResult>;
+        logout(): Promise<boolean>;
+        history(): Promise<CloudProgressRow[]>;
+        favorites(): Promise<CloudFavoriteRow[]>;
+        setFavorite(seriesId: string, add: boolean): Promise<boolean>;
+        reportProgress(p: ProgressReportInput): Promise<boolean>;
+      };
       getDanmaku(seriesId: string, itemId: string, fresh?: boolean): Promise<DanmakuResult>;
       getActorRanking(page?: number, gender?: string): Promise<{ items: ActorCard[]; hasMore: boolean; rankDate: string }>;
       getActorDetail(actorId: string): Promise<ActorDetail>;

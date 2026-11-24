@@ -29,6 +29,32 @@ export const IconHome = (p: IconProps) => (
   </Base>
 );
 
+/** 用户（头像占位 / 账号入口） */
+export const IconUser = (p: IconProps) => (
+  <Base {...p}>
+    <circle cx="12" cy="8.5" r="3.5" />
+    <path d="M5 20c1.2-3.2 3.9-5 7-5s5.8 1.8 7 5" />
+  </Base>
+);
+
+/** 退出登录 */
+export const IconLogout = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M14 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4" />
+    <path d="M10 12h9" />
+    <path d="m6 9-3 3 3 3" />
+  </Base>
+);
+
+/** 云同步（双箭头循环） */
+export const IconSync = (p: IconProps) => (
+  <Base {...p}>
+    <path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3" />
+    <path d="M17 3v5h-5" />
+    <path d="M7 21v-5h5" />
+  </Base>
+);
+
 export const IconGrid = (p: IconProps) => (
   <Base {...p}>
     <rect x="3" y="3" width="7.5" height="7.5" rx="1.5" />

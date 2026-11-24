@@ -10,14 +10,14 @@ const { deviceKey } = require('../native/device-session');
 const { playbackRequestV5, videoTabRequest, shortplayRequest, SHORTPLAY_APIS } = require('./requests');
 const { H264_CODECS, HEVC_CODECS, BYTEVC2_CODECS } = require('./entry');
 
-// 播放端点阶梯（5 通道，按序尝试；偏好路由记忆该设备上次成功通道）
-// PR#92：播放域主通道迁移至 reading.snssdk.com（multi_video_model/player/v1）
+// 播放端点阶梯（currentApp 7.4.5.32 协议，对照 hongguoTV MobilePlayback.kt 2026-11 main：
+// 主通道 reading.snssdk.com preload/v1，备选 PlayRetryPlan hosts b/hl/lf 同路径；
+// 旧 player/v1 端点对 v5 签名已空响应淘汰）
 const VIDEO_APIS = [
-    'https://reading.snssdk.com/novel/player/multi_video_model/player/v1',
-    'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1',
-    'https://api5-normal-lq.fqnovel.com/novel/player/multi_video_model/player/v1',
-    'https://is.snssdk.com/novel/player/multi_video_model/player/v1',
-    'https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/player/v1',
+    'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1',
+    'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1',
+    'https://api5-normal-hl.fqnovel.com/novel/player/multi_video_model/preload/v1',
+    'https://api5-normal-lf.fqnovel.com/novel/player/multi_video_model/preload/v1',
 ];
 
 const entryCache = new Map();
@@ -275,7 +275,7 @@ function isBytevc2OnlyModel(entry) {
 async function retryMultiModelAlternateHost(vid, payload, device, execRequestJson, deadline, signal) {
     try {
         const signed = playbackRequestV5(payload, device,
-            'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1');
+            'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1');
         const resp = await execRequestJson(signed.url, { method: 'POST', headers: signed.headers, data: signed.body }, deadline, signal);
         if (Number(resp?.Code || resp?.code || 0) !== 0) return null;
         const dataEntries = resp?.data?.['1004'] || resp?.data;
@@ -356,12 +356,12 @@ async function resolveUpstreamEntry(vid, batch, refresh, callerSignal) {
 
     const job = { controller, waiters: new Set(), promise: null };
     job.promise = (async () => {
-        // PR#106：payload 变更——device_level 3→1、新增 disable_video_relate_book:false、
-        // dr_scene:'player' 移至末尾（对照官方 v04.10.03 客户端抓包）
+        // currentApp 协议 payload（对照 hongguoTV MobilePlayback.kt currentApp 分支）：
+        // device_level 1→2、dr_scene 'player'→'preload'，其余字段与官方抓包一致
         const payload = JSON.stringify({
-            biz_param: { detail_page_version: 0, device_level: 1, disable_digg_stat: false, disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
+            biz_param: { detail_page_version: 0, device_level: 2, disable_digg_stat: false, disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
             mixed_video_id_map: { '1004': batch },
-            dr_scene: 'player',
+            dr_scene: 'preload',
         });
         const playbackId = crypto.randomUUID();
         // 传输层（requestJson）留在 app-source：设备会话注入/Cookie 合并对全接口统一生效
