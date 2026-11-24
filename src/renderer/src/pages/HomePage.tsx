@@ -9,6 +9,7 @@ import { HRow } from '../components/HRow';
 import { DramaCardView } from '../components/DramaCard';
 import { Cover } from '../components/Cover';
 import { ErrorTip, Loading } from '../components/Feedback';
+import { useCacheActive } from '../components/KeepAlive';
 import { IconPlay, IconChevronRight, IconTrash, IconClock } from '../components/Icons';
 import { toast } from '../components/Toast';
 import type { DramaCard, HomeSection } from '../types';
@@ -24,22 +25,25 @@ function Banner({ slides }: { slides: { item: DramaCard; section: string }[] }) 
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [layer, setLayer] = useState<HTMLElement | null>(null);
+  // KeepAlive 缓存层激活状态：失活（跳详情）时暂停轮播并撤掉 hero-layer 的 portal，
+  // 避免 banner 图残留在详情页背景上（任务 79）
+  const active = useCacheActive();
 
   useEffect(() => {
     setLayer(document.getElementById('hero-layer'));
   }, []);
 
   useEffect(() => {
-    if (paused || slides.length <= 1) return;
+    if (!active || paused || slides.length <= 1) return;
     const t = setInterval(() => setIdx((i) => (i + 1) % slides.length), BANNER_INTERVAL);
     return () => clearInterval(t);
-  }, [paused, slides.length]);
+  }, [active, paused, slides.length]);
 
   if (slides.length === 0) return null;
 
   return (
     <>
-      {layer
+      {layer && active
         ? createPortal(
             <div className="hero-bg" aria-hidden="true">
               {slides.map(({ item }, i) => (

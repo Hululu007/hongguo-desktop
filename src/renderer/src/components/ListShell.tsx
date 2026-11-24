@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { useCacheActive } from './KeepAlive';
 import { ErrorTip, Loading } from './Feedback';
 import { toast } from './Toast';
 
@@ -46,6 +47,25 @@ export function ListShell({
   const lockRef = useRef(false);
   // 上一次自动续载时的内容高度：若两次高度相同（新页全是去重掉的重复项），停止自动续载避免死循环
   const lastAutoHeightRef = useRef(0);
+  // KeepAlive 休眠前的滚动位置：display:none 会重置 scrollTop，恢复激活时写回（任务 79）
+  const scrollTopRef = useRef(0);
+  // 缓存层激活状态（非缓存环境恒为 true，effect 只在状态变化时恢复/记录一次）
+  const active = useCacheActive();
+  // 失活记录在 render 阶段：DOM 尚未隐藏，能读到真实滚动位置（useEffect 里读时已归零）
+  if (!active) {
+    const el = bodyRef.current;
+    if (el) scrollTopRef.current = el.scrollTop;
+  }
+  useEffect(() => {
+    if (!active) return;
+    const el = bodyRef.current;
+    if (!el) return;
+    const top = scrollTopRef.current;
+    // 恢复激活：等一帧布局完成（display:none → 恢复显示）后写回滚动位置
+    requestAnimationFrame(() => {
+      el.scrollTop = top;
+    });
+  }, [active]);
   // 追加失败是否已 toast 过：避免同一次失败在依赖变化时重复提示
   const toastedErrRef = useRef<string | null>(null);
 

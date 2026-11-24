@@ -1,5 +1,6 @@
-import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+﻿import { HashRouter, Navigate, Route, Routes, useLocation, type Location } from 'react-router-dom';
 import { useEffect, useState } from 'react';
+import { CacheLayer, cacheKeyOf } from './components/KeepAlive';
 import { Sidebar } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
 import { ToastHost } from './components/Toast';
@@ -33,7 +34,20 @@ export function App() {
 }
 
 function RootLayout() {
-  const { pathname } = useLocation();
+  const location = useLocation();
+  const { pathname, search } = location;
+  // ===== KeepAlive 缓存（任务 79，自研 display 方案，见 components/KeepAlive.tsx）=====
+  // 缓存键含动态参数：/category/:main 切分类、/rank/:key 切榜单、/actor/:actorId 切演员、
+  // /search?keyword= 换关键词，各自独立实例，互不串缓存
+  const activeKey = cacheKeyOf(pathname, search);
+  /** 已访问缓存路由快照：键 → 首次访问时的 location（之后常驻渲染、display 切换显隐） */
+  const [cacheMap, setCacheMap] = useState<Map<string, Location>>(new Map());
+  useEffect(() => {
+    if (activeKey && !cacheMap.has(activeKey)) {
+      setCacheMap((prev) => new Map(prev).set(activeKey, location));
+    }
+  }, [activeKey, location, cacheMap]);
+
   // 主题应用（主窗口 + 播放器独立窗口共用）：settings.theme → <html data-theme>
   useTheme();
   // 关闭确认弹窗：Alt+F4（主进程转发）与顶栏关闭按钮（无记住偏好时）共用
@@ -52,33 +66,27 @@ function RootLayout() {
       window.removeEventListener('hg:request-close', onReq);
     };
   }, []);
-  const routes = (
-    <Routes>
-      <Route path="/" element={<HomePage />} />
-      <Route path="/category" element={<Navigate to="/category/real-drama" replace />} />
-      <Route path="/category/:main" element={<CategoryPage />} />
-      <Route path="/rank" element={<RankPage />} />
-      {/* 榜单直达：/rank/hot-drama（首页「查看更多」跳转带 key） */}
-      <Route path="/rank/:key" element={<RankPage />} />
-      {/* 剧星榜（演员榜 + 演员主页/作品） */}
-      <Route path="/actors" element={<ActorsPage />} />
-      <Route path="/actor/:actorId" element={<ActorDetailPage />} />
-      <Route path="/search" element={<SearchPage />} />
+  /** 非缓存路由（当前地址不是缓存页时渲染；播放器窗口路径也走这里） */
+  const plainRoutes = (
+    <Routes location={location}>
+      {/* 详情/播放/收藏/历史/设置不缓存：数据新鲜度优先 */}
       <Route path="/drama/:id" element={<DetailPage />} />
       <Route path="/player/:seriesId/:itemId" element={<PlayerPage />} />
       <Route path="/player/:seriesId" element={<PlayerPage />} />
       <Route path="/favorites" element={<FavoritesPage />} />
       <Route path="/history" element={<HistoryPage />} />
       <Route path="/settings" element={<SettingsPage />} />
+      {/* /category 落地重定向与通配兜底：不放缓存层，避免休眠层触发导航 */}
+      <Route path="/category" element={<Navigate to="/category/real-drama" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 
-  // 播放器独立窗口：无侧栏/顶栏，视频铺满整个窗口
+  // 播放器独立窗口：无侧栏/顶栏，视频铺满整个窗口（不参与缓存）
   if (pathname.startsWith('/player')) {
     return (
       <div className="app app-player">
-        {routes}
+        {plainRoutes}
         <ToastHost />
       </div>
     );
@@ -91,7 +99,29 @@ function RootLayout() {
         {/* 首页主视觉层：Banner 图铺满整列（含顶部控制栏），内容与标题栏压在其上 */}
         <div className="hero-layer" id="hero-layer" />
         <Topbar />
-        <main className="app-main">{routes}</main>
+        <main className="app-main" id="app-main">
+          {/* 缓存层：每个首次访问的缓存路由常驻一份 Routes（location 固定为快照），
+              非当前层 display:none 隐藏——DOM/状态/滚动保留，不重新请求 */}
+          {[...cacheMap.entries()].map(([key, snap]) => (
+            <CacheLayer key={key} active={key === activeKey}>
+              <Routes location={snap}>
+                <Route path="/" element={<HomePage />} />
+                <Route path="/category/:main" element={<CategoryPage />} />
+                <Route path="/rank" element={<RankPage />} />
+                <Route path="/rank/:key" element={<RankPage />} />
+                <Route path="/actors" element={<ActorsPage />} />
+                <Route path="/actor/:actorId" element={<ActorDetailPage />} />
+                <Route
+                  path="/search"
+                  // 快照地址解析关键词传入（休眠层不能用 useSearchParams，读的是 Router 真实地址）
+                  element={<SearchPage keyword={new URLSearchParams(snap.search).get('keyword') ?? ''} />}
+                />
+              </Routes>
+            </CacheLayer>
+          ))}
+          {/* 当前地址是非缓存路由（详情/收藏/历史/设置等）时直接渲染 */}
+          {activeKey === null ? plainRoutes : null}
+        </main>
       </div>
       <CloseConfirmModal open={closeOpen} onClose={closeConfirmModal} />
       <UpdateModal />

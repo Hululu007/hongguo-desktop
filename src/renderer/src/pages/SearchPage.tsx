@@ -1,4 +1,3 @@
-import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import { RankList } from '../components/RankList';
 import { EmptyState } from '../components/Feedback';
@@ -9,10 +8,13 @@ import { IconSearch, IconFilm } from '../components/Icons';
 /**
  * 搜索结果页：JSON API 分页（/api/search/result）。
  * 头部固定（关键词 + 数量），列表独立滚动、触底自动加载下一页，UI 与榜单一致。
+ * 关键词由 App 经 props 传入（KeepAlive 休眠层不能用 useSearchParams：
+ * 该 hook 读 Router 层真实地址，休眠期间会读到其它页面地址导致状态被清）。
+ * @param {Object} props - 组件属性。
+ * @param {string} props.keyword - 搜索关键词（空串显示引导空态）。
+ * @returns {JSX.Element} 搜索结果列表页。
  */
-export function SearchPage() {
-  const [params] = useSearchParams();
-  const keyword = params.get('keyword') ?? '';
+export function SearchPage({ keyword = '' }: { keyword?: string }) {
 
   const { items, meta, loading, loadingMore, error, hasMore, loadMore, retryMore, reload } =
     usePagedList(
